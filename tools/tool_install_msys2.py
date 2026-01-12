@@ -4,7 +4,8 @@ from .base import PrintUtils, CmdTask, FileUtils, WingetUtils, ChooseTask
 from .base import osversion, osarch
 import os
 import sys
-
+import platform
+import subprocess
 
 class Tool(BaseTool):
     def __init__(self):
@@ -310,30 +311,72 @@ Server = https://mirrors.ustc.edu.cn/msys2/mingw/x86_64
             return False
 
     def update_msys2(self):
-        """更新 MSYS2"""
-        PrintUtils.print_info("正在更新 MSYS2...")
-        PrintUtils.print_warning("更新过程中可能需要关闭并重新打开 MSYS2 终端")
-
+        """初始化 MSYS2 环境，更新 pacman 数据库"""
         msys2_path = self.get_msys2_path()
         if not msys2_path:
             PrintUtils.print_error("未找到 MSYS2 安装目录")
             return False
 
         bash_path = os.path.join(msys2_path, 'usr', 'bin', 'bash.exe')
-
         if not os.path.exists(bash_path):
-            PrintUtils.print_error("未找到 bash.exe")
+            PrintUtils.print_error(f"未找到 bash.exe，路径: {bash_path}")
             return False
 
-        # 执行更新命令
-        update_cmd = f'"{bash_path}" -lc "pacman -Syu --noconfirm"'
-        result = CmdTask(update_cmd, os_command=True).run()
-
-        if result:
-            PrintUtils.print_success("MSYS2 更新完成")
+        try:
+            PrintUtils.print_info("初始化 MSYS2 环境...")
+            
+            # 更新 pacman 数据库
+            PrintUtils.print_info("更新 pacman 数据库...")
+            result = subprocess.run(
+                [bash_path, '-lc', 'pacman -Sy --noconfirm'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=300
+            )
+            
+            if result.returncode == 0:
+                PrintUtils.print_success("pacman 数据库更新完成")
+            else:
+                PrintUtils.print_warning(f"pacman 数据库更新可能有问题: {result.stderr}")
+                # 继续执行，可能只是警告
+            
+            # 更新 pacman 本身
+            PrintUtils.print_info("更新 pacman...")
+            result = subprocess.run(
+                [bash_path, '-lc', 'pacman -S --noconfirm pacman pacman-mirrors msys2-runtime'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=300
+            )
+            
+            if result.returncode == 0:
+                PrintUtils.print_success("pacman 更新完成")
+            else:
+                PrintUtils.print_warning(f"pacman 更新可能有问题: {result.stderr}")
+            
+            # 再次更新数据库
+            PrintUtils.print_info("再次更新 pacman 数据库...")
+            result = subprocess.run(
+                [bash_path, '-lc', 'pacman -Sy --noconfirm'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=300
+            )
+            
+            PrintUtils.print_success("MSYS2 初始化完成")
             return True
-        else:
-            PrintUtils.print_warning("MSYS2 更新可能未完全成功，建议手动检查")
+            
+        except subprocess.TimeoutExpired:
+            PrintUtils.print_error("MSYS2 初始化超时")
+            return False
+        except Exception as e:
+            PrintUtils.print_error(f"MSYS2 初始化失败: {e}")
             return False
 
     def run(self):
