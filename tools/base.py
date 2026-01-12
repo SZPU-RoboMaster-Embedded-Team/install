@@ -46,6 +46,17 @@ elif osarch == 'arm64' or osarch == 'aarch64':
 osversion = platform.platform()
 
 
+def check_admin():
+    """检查是否有管理员权限（Windows）"""
+    if not is_windows:
+        return False
+    try:
+        import ctypes
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except:
+        return False
+
+
 class ConfigHelper():
     """配置文件助手"""
     def __init__(self, record_file=None):
@@ -444,6 +455,191 @@ class WingetUtils:
             PrintUtils.print_warning(f"列出已安装版本时出错: {str(e)}")
             # 如果解析失败，返回空列表，让调用者尝试直接卸载
             return []
+
+
+class EnvUtils:
+    """环境变量配置工具（通用工具类）"""
+    
+    @staticmethod
+    def add_to_system_path(paths, skip_if_not_admin=True):
+        """添加路径到系统PATH环境变量
+        
+        Args:
+            paths: 路径列表（字符串列表）
+            skip_if_not_admin: 如果没有管理员权限是否跳过
+            
+        Returns:
+            bool: 是否成功
+        """
+        if not is_windows:
+            PrintUtils.print_warning("环境变量配置仅支持 Windows 平台")
+            return False
+        
+        if not check_admin():
+            if skip_if_not_admin:
+                PrintUtils.print_warning("需要管理员权限来修改系统环境变量")
+                PrintUtils.print_info("将尝试添加到用户环境变量")
+                return EnvUtils.add_to_user_path(paths)
+            else:
+                PrintUtils.print_error("需要管理员权限")
+                return False
+        
+        try:
+            import winreg
+            
+            # 打开系统环境变量注册表项
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0,
+                winreg.KEY_ALL_ACCESS
+            )
+            
+            # 获取当前的PATH值
+            try:
+                current_path, _ = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                current_path = ""
+            
+            # 转换为列表
+            path_list = [p.strip() for p in current_path.split(os.pathsep) if p.strip()]
+            
+            # 添加新路径（如果不存在）
+            added_paths = []
+            for path in paths:
+                path_abs = os.path.abspath(path)
+                if path_abs not in path_list:
+                    path_list.append(path_abs)
+                    added_paths.append(path_abs)
+            
+            if added_paths:
+                # 更新PATH
+                new_path = os.pathsep.join(path_list)
+                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+                winreg.CloseKey(key)
+                
+                # 广播环境变量更改消息
+                import ctypes
+                ctypes.windll.user32.SendMessageW(
+                    0xFFFF,  # HWND_BROADCAST
+                    0x001A,  # WM_SETTINGCHANGE
+                    0,
+                    "Environment"
+                )
+                
+                PrintUtils.print_success("已添加以下路径到系统PATH:")
+                for p in added_paths:
+                    PrintUtils.print_info(f"  - {p}")
+                PrintUtils.print_warning("请重新打开命令行窗口以使环境变量生效")
+                return True
+            else:
+                winreg.CloseKey(key)
+                PrintUtils.print_info("所有路径已存在于系统PATH中")
+                return True
+                
+        except Exception as e:
+            PrintUtils.print_error(f"修改系统环境变量失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    @staticmethod
+    def add_to_user_path(paths):
+        """添加路径到用户PATH环境变量（不需要管理员权限）
+        
+        Args:
+            paths: 路径列表（字符串列表）
+            
+        Returns:
+            bool: 是否成功
+        """
+        if not is_windows:
+            PrintUtils.print_warning("环境变量配置仅支持 Windows 平台")
+            return False
+        
+        try:
+            import winreg
+            
+            # 打开用户环境变量注册表项
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                "Environment",
+                0,
+                winreg.KEY_ALL_ACCESS
+            )
+            
+            # 获取当前的PATH值
+            try:
+                current_path, _ = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                current_path = ""
+            
+            # 转换为列表
+            path_list = [p.strip() for p in current_path.split(os.pathsep) if p.strip()]
+            
+            # 添加新路径（如果不存在）
+            added_paths = []
+            for path in paths:
+                path_abs = os.path.abspath(path)
+                if path_abs not in path_list:
+                    path_list.append(path_abs)
+                    added_paths.append(path_abs)
+            
+            if added_paths:
+                # 更新PATH
+                new_path = os.pathsep.join(path_list)
+                winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
+                winreg.CloseKey(key)
+                
+                # 广播环境变量更改消息
+                import ctypes
+                ctypes.windll.user32.SendMessageW(
+                    0xFFFF,  # HWND_BROADCAST
+                    0x001A,  # WM_SETTINGCHANGE
+                    0,
+                    "Environment"
+                )
+                
+                PrintUtils.print_success("已添加以下路径到用户PATH:")
+                for p in added_paths:
+                    PrintUtils.print_info(f"  - {p}")
+                PrintUtils.print_warning("请重新打开命令行窗口以使环境变量生效")
+                return True
+            else:
+                winreg.CloseKey(key)
+                PrintUtils.print_info("所有路径已存在于用户PATH中")
+                return True
+                
+        except Exception as e:
+            PrintUtils.print_error(f"修改用户环境变量失败: {e}")
+            return False
+    
+    @staticmethod
+    def configure_path_environment(paths, skip_if_not_admin=True):
+        """配置PATH环境变量（通用方法）
+        
+        Args:
+            paths: 需要添加的路径列表（字符串列表）
+            skip_if_not_admin: 如果没有管理员权限是否跳过（False时要求管理员权限）
+            
+        Returns:
+            bool: 是否成功
+        """
+        if not paths:
+            PrintUtils.print_warning("路径列表为空")
+            return False
+        
+        # 尝试添加到系统PATH（需要管理员权限）
+        if check_admin():
+            return EnvUtils.add_to_system_path(paths, skip_if_not_admin=False)
+        else:
+            # 如果没有管理员权限，添加到用户PATH
+            if skip_if_not_admin:
+                PrintUtils.print_warning("没有管理员权限，将添加到用户PATH")
+                return EnvUtils.add_to_user_path(paths)
+            else:
+                PrintUtils.print_error("需要管理员权限")
+                return False
 
 
 class ChooseTask:

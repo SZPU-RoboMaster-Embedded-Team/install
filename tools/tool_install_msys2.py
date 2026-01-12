@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 from .base import BaseTool
-from .base import PrintUtils, CmdTask, FileUtils, WingetUtils, ChooseTask
+from .base import PrintUtils, CmdTask, FileUtils, WingetUtils, ChooseTask, EnvUtils, check_admin
 from .base import osversion, osarch
 import os
 import sys
@@ -379,6 +379,65 @@ Server = https://mirrors.ustc.edu.cn/msys2/mingw/x86_64
             PrintUtils.print_error(f"MSYS2 初始化失败: {e}")
             return False
 
+    def get_msys2_paths(self, msys2_base_path):
+        """获取需要添加到PATH的MSYS2路径
+        
+        Args:
+            msys2_base_path: MSYS2的安装路径（字符串）
+            
+        Returns:
+            list: 路径列表（字符串）
+        """
+        paths = []
+        
+        if not msys2_base_path or not os.path.exists(msys2_base_path):
+            return paths
+        
+        # MSYS2的主要bin目录
+        msys2_bin = os.path.join(msys2_base_path, 'usr', 'bin')
+        if os.path.exists(msys2_bin):
+            paths.append(msys2_bin)
+        
+        # MinGW64的bin目录
+        mingw64_bin = os.path.join(msys2_base_path, 'mingw64', 'bin')
+        if os.path.exists(mingw64_bin):
+            paths.append(mingw64_bin)
+        
+        # UCRT64的bin目录
+        ucrt64_bin = os.path.join(msys2_base_path, 'ucrt64', 'bin')
+        if os.path.exists(ucrt64_bin):
+            paths.append(ucrt64_bin)
+        
+        return paths
+
+    def configure_environment_variables(self):
+        """配置 MSYS2 环境变量"""
+        msys2_path = self.get_msys2_path()
+        if not msys2_path:
+            PrintUtils.print_warning("未找到 MSYS2 安装目录，跳过环境变量配置")
+            return False
+
+        PrintUtils.print_info("=" * 60)
+        PrintUtils.print_info("MSYS2 环境变量配置")
+        PrintUtils.print_info("=" * 60)
+        PrintUtils.print_info("是否将 MSYS2 的 bin 目录添加到系统 PATH 环境变量？")
+        PrintUtils.print_info("这将允许你在任何命令行窗口直接使用 MSYS2 工具")
+        
+        choice = input("是否配置环境变量？[y/N]: ").strip().lower()
+        if choice not in ['y', 'yes']:
+            PrintUtils.print_info("跳过环境变量配置")
+            return False
+
+        # 获取需要添加的路径
+        paths = self.get_msys2_paths(msys2_path)
+        if not paths:
+            PrintUtils.print_warning("没有找到需要添加到PATH的路径")
+            return False
+
+        # 配置环境变量（使用通用方法）
+        success = EnvUtils.configure_path_environment(paths, skip_if_not_admin=True)
+        return success
+
     def run(self):
         """运行安装流程"""
         PrintUtils.print_info("=" * 60)
@@ -437,6 +496,9 @@ Server = https://mirrors.ustc.edu.cn/msys2/mingw/x86_64
         if success:
             # 安装成功后进行配置
             self.configure_msys2()
+            
+            # 配置环境变量
+            self.configure_environment_variables()
 
             PrintUtils.print_success("=" * 60)
             PrintUtils.print_success("MSYS2 安装完成!")
