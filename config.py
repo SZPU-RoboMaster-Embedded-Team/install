@@ -20,6 +20,9 @@ MSYS2_PATHS = [
     r'C:\msys32',
 ]
 
+# ARM GCC 工具链安装目录
+ARM_GCC_INSTALL_DIR = r'D:\CodeTools\Compiler'
+
 # ==================== 镜像源配置 ====================
 
 # 默认使用的镜像源

@@ -38,8 +38,14 @@ tools = {
         'tool': 'tools/tool_install_openocd.py',
         'dep': []
     },
+    4: {
+        'tip': '一键安装: ARM GCC 工具链 (arm-none-eabi-gcc)',
+        'type': INSTALL_DEV,
+        'tool': 'tools/tool_install_armgcc.py',
+        'dep': []
+    },
     # 后续可以添加更多工具
-    # 4: {'tip':'一键安装: Git for Windows', 'type':INSTALL_DEV, 'tool':'tools/tool_install_git.py', 'dep':[]},
+    # 5: {'tip':'一键安装: Git for Windows', 'type':INSTALL_DEV, 'tool':'tools/tool_install_git.py', 'dep':[]},
     # 5: {'tip':'一键安装: VSCode', 'type':INSTALL_DEV, 'tool':'tools/tool_install_vscode.py', 'dep':[]},
     # 6: {'tip':'一键安装: Python', 'type':INSTALL_DEV, 'tool':'tools/tool_install_python.py', 'dep':[]},
 }
