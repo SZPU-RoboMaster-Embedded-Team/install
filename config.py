@@ -8,11 +8,14 @@
 # Winget 默认安装路径
 # 所有通过 winget 安装的软件都会尝试安装到此目录
 # 注意: 某些软件包可能不支持自定义安装路径
-WINGET_INSTALL_PATH = r'D:\wingetApp'
+WINGET_INSTALL_PATH = r'D:\CodeTools'
 
 # MSYS2 安装路径（用于检测和配置）
+# 第一个路径是期望的安装路径（用于新安装）
+# 其他路径是备选检测路径（用于兼容已安装的情况）
 MSYS2_PATHS = [
-    r'D:\wingetApp\msys64',
+    r'D:\CodeTools\msys64',  # 期望的安装路径
+    r'D:\CodeTools',  # 兼容已安装在此路径的情况
     r'C:\msys64',
     r'C:\msys32',
 ]

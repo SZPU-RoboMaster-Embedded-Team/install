@@ -2,6 +2,8 @@
 from .base import BaseTool
 from .base import PrintUtils, CmdTask, FileUtils, WingetUtils, ChooseTask
 from .base import osversion, osarch
+import os
+import sys
 
 
 class Tool(BaseTool):
@@ -9,6 +11,43 @@ class Tool(BaseTool):
         self.name = "一键安装 MSYS2"
         self.type = BaseTool.TYPE_INSTALL
         self.author = '小鱼'
+
+    def get_msys2_path(self):
+        """获取 MSYS2 安装路径"""
+        # 尝试从配置文件获取路径列表
+        paths = None
+        try:
+            # 先尝试直接导入（base.py 可能已经添加了路径）
+            import config
+            if hasattr(config, 'MSYS2_PATHS'):
+                paths = config.MSYS2_PATHS
+        except ImportError:
+            # 如果导入失败，尝试添加路径后再次导入
+            try:
+                parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                if parent_dir not in sys.path:
+                    sys.path.insert(0, parent_dir)
+                import config
+                if hasattr(config, 'MSYS2_PATHS'):
+                    paths = config.MSYS2_PATHS
+            except:
+                pass
+        
+        # 如果配置文件中没有，使用默认路径列表
+        if paths is None:
+            paths = [
+                r'C:\msys64',
+                r'C:\msys32',
+                os.path.expanduser(r'~\msys64'),
+                os.path.expanduser(r'~\msys32')
+            ]
+        
+        # 遍历路径列表，返回第一个存在的路径
+        for path in paths:
+            if os.path.exists(path):
+                return path
+        
+        return None
 
     def check_msys2_installed(self):
         """检查 MSYS2 是否已安装"""
@@ -25,19 +64,11 @@ class Tool(BaseTool):
         except:
             pass
 
-        # 检查默认安装路径
-        import os
-        default_paths = [
-            r'C:\msys64',
-            r'C:\msys32',
-            os.path.expanduser(r'~\msys64'),
-            os.path.expanduser(r'~\msys32')
-        ]
-
-        for path in default_paths:
-            if os.path.exists(path):
-                PrintUtils.print_success(f"检测到 MSYS2 已安装在: {path}")
-                return True
+        # 使用统一的方法检查安装路径
+        msys2_path = self.get_msys2_path()
+        if msys2_path:
+            PrintUtils.print_success(f"检测到 MSYS2 已安装在: {msys2_path}")
+            return True
 
         return False
 
@@ -48,11 +79,29 @@ class Tool(BaseTool):
         # MSYS2 的 winget 包 ID
         package_id = "MSYS2.MSYS2"
 
-        # 使用默认安装路径 D:\wingetApp
-        if WingetUtils.install(package_id, use_default_location=True):
+        # 获取 MSYS2 的期望安装路径（从配置文件读取第一个路径）
+        msys2_install_path = None
+        try:
+            import config
+            if hasattr(config, 'MSYS2_PATHS') and len(config.MSYS2_PATHS) > 0:
+                msys2_install_path = config.MSYS2_PATHS[0]
+        except:
+            # 如果无法读取配置，使用默认路径
+            msys2_install_path = r'C:\msys64'
+
+        # 使用指定的 MSYS2 安装路径
+        if msys2_install_path:
+            PrintUtils.print_info(f"尝试将 MSYS2 安装到: {msys2_install_path}")
+            success = WingetUtils.install(package_id, custom_location=msys2_install_path)
+        else:
+            # 如果无法获取路径，使用默认行为
+            success = WingetUtils.install(package_id, use_default_location=True)
+
+        if success:
             PrintUtils.print_success("MSYS2 安装成功!")
-            PrintUtils.print_info(f"MSYS2 安装路径: {WingetUtils.DEFAULT_INSTALL_PATH}")
-            PrintUtils.print_warning("注意: 如果 winget 不支持自定义路径，可能仍会安装到默认位置 C:\\msys64")
+            if msys2_install_path:
+                PrintUtils.print_info(f"MSYS2 安装路径: {msys2_install_path}")
+            PrintUtils.print_warning("注意: 如果 MSYS2 安装程序不支持自定义路径，可能仍会安装到默认位置 C:\\msys64")
             return True
         else:
             PrintUtils.print_error("MSYS2 安装失败")
@@ -196,12 +245,8 @@ class Tool(BaseTool):
         """配置清华镜像源"""
         PrintUtils.print_info("配置清华大学镜像源...")
 
-        import os
-        msys2_path = r'C:\msys64'
-        if not os.path.exists(msys2_path):
-            msys2_path = os.path.expanduser(r'~\msys64')
-
-        if not os.path.exists(msys2_path):
+        msys2_path = self.get_msys2_path()
+        if not msys2_path:
             PrintUtils.print_error("未找到 MSYS2 安装目录")
             return False
 
@@ -234,12 +279,8 @@ Server = https://mirrors.tuna.tsinghua.edu.cn/msys2/mingw/x86_64
         """配置中科大镜像源"""
         PrintUtils.print_info("配置中国科学技术大学镜像源...")
 
-        import os
-        msys2_path = r'C:\msys64'
-        if not os.path.exists(msys2_path):
-            msys2_path = os.path.expanduser(r'~\msys64')
-
-        if not os.path.exists(msys2_path):
+        msys2_path = self.get_msys2_path()
+        if not msys2_path:
             PrintUtils.print_error("未找到 MSYS2 安装目录")
             return False
 
@@ -273,12 +314,8 @@ Server = https://mirrors.ustc.edu.cn/msys2/mingw/x86_64
         PrintUtils.print_info("正在更新 MSYS2...")
         PrintUtils.print_warning("更新过程中可能需要关闭并重新打开 MSYS2 终端")
 
-        import os
-        msys2_path = r'C:\msys64'
-        if not os.path.exists(msys2_path):
-            msys2_path = os.path.expanduser(r'~\msys64')
-
-        if not os.path.exists(msys2_path):
+        msys2_path = self.get_msys2_path()
+        if not msys2_path:
             PrintUtils.print_error("未找到 MSYS2 安装目录")
             return False
 

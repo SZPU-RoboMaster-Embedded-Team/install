@@ -268,7 +268,7 @@ class WingetUtils:
 
     @staticmethod
     def install(package_id, accept_source_agreements=True, accept_package_agreements=True,
-                custom_location=None, use_default_location=True):
+                custom_location=None, use_default_location=True, source='winget'):
         """安装软件包
 
         Args:
@@ -277,12 +277,16 @@ class WingetUtils:
             accept_package_agreements: 接受软件包协议
             custom_location: 自定义安装路径（如果指定，会覆盖 use_default_location）
             use_default_location: 是否使用默认安装路径 D:\wingetApp
+            source: 指定源（默认 'winget'，避免从其他源搜索导致的连接错误）
         """
         if not WingetUtils.check_winget():
             PrintUtils.print_error("Winget 不可用，请确保系统已安装 Windows 应用安装程序")
             return False
 
         cmd = f'winget install --id {package_id}'
+        # 指定源，避免从多个源搜索导致的连接错误
+        if source:
+            cmd += f' --source {source}'
         if accept_source_agreements:
             cmd += ' --accept-source-agreements'
         if accept_package_agreements:
