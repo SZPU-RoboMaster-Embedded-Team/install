@@ -13,6 +13,38 @@ class Tool(BaseTool):
         self.type = BaseTool.TYPE_INSTALL
         self.author = '小鱼'
 
+    def is_valid_msys2_path(self, path):
+        """检查路径是否是有效的 MSYS2 安装目录
+        
+        Args:
+            path: 要检查的路径
+            
+        Returns:
+            bool: 如果是有效的 MSYS2 安装目录返回 True，否则返回 False
+        """
+        if not path or not os.path.exists(path):
+            return False
+        
+        # 检查关键文件/目录是否存在，以确认这是真正的 MSYS2 安装目录
+        # 检查 usr\bin\bash.exe（MSYS2 的核心文件）
+        bash_path = os.path.join(path, 'usr', 'bin', 'bash.exe')
+        if os.path.exists(bash_path):
+            return True
+        
+        # 检查 etc\pacman.d（pacman 配置目录）
+        pacman_dir = os.path.join(path, 'etc', 'pacman.d')
+        if os.path.exists(pacman_dir):
+            return True
+        
+        # 如果路径本身是 msys64 或 msys32，也检查是否有 usr 目录
+        path_name = os.path.basename(path.rstrip(os.sep))
+        if path_name in ['msys64', 'msys32']:
+            usr_dir = os.path.join(path, 'usr')
+            if os.path.exists(usr_dir):
+                return True
+        
+        return False
+
     def get_msys2_path(self):
         """获取 MSYS2 安装路径"""
         # 尝试从配置文件获取路径列表
@@ -43,9 +75,29 @@ class Tool(BaseTool):
                 os.path.expanduser(r'~\msys32')
             ]
         
-        # 遍历路径列表，返回第一个存在的路径
+        # 遍历路径列表，返回第一个有效的 MSYS2 安装路径
         for path in paths:
-            if os.path.exists(path):
+            # 检查路径名，判断是否是可能包含MSYS2子目录的父目录
+            path_name = os.path.basename(path.rstrip(os.sep))
+            is_likely_parent_dir = path_name not in ['msys64', 'msys32']
+            
+            # 对于可能包含MSYS2子目录的父目录（如D:\CodeTools），
+            # 优先检查子目录，避免误判：如果D:\CodeTools存在但D:\CodeTools\msys64不存在，
+            # 说明MSYS2已经卸载，不应该返回D:\CodeTools
+            if is_likely_parent_dir and os.path.exists(path):
+                # 先检查常见的 MSYS2 子目录
+                for subdir in ['msys64', 'msys32']:
+                    sub_path = os.path.join(path, subdir)
+                    if self.is_valid_msys2_path(sub_path):
+                        return sub_path
+                
+                # 如果没有找到有效的子目录，继续检查下一个路径
+                # 不检查父目录本身，因为如果子目录不存在，说明MSYS2已经卸载
+                continue
+            
+            # 对于明确的MSYS2目录（如C:\msys64）或子目录检查失败的情况，
+            # 检查路径本身是否是有效的 MSYS2 安装目录
+            if self.is_valid_msys2_path(path):
                 return path
         
         return None
@@ -80,6 +132,17 @@ class Tool(BaseTool):
         # MSYS2 的 winget 包 ID
         package_id = "MSYS2.MSYS2"
 
+        # 显示 winget 下载文件的存储位置
+        winget_download_path = os.path.join(
+            os.environ.get('LOCALAPPDATA', ''),
+            'Microsoft', 'WinGet', 'Packages'
+        )
+        temp_path = os.environ.get('TEMP', '')
+        PrintUtils.print_info(f"下载文件存储位置:")
+        PrintUtils.print_info(f"  - Winget 缓存目录: {winget_download_path}")
+        PrintUtils.print_info(f"  - 系统临时目录: {temp_path}")
+        PrintUtils.print_info(f"  (安装程序下载后会自动运行，通常不会保留在临时目录)")
+
         # 获取 MSYS2 的期望安装路径（从配置文件读取第一个路径）
         msys2_install_path = None
         try:
@@ -102,7 +165,7 @@ class Tool(BaseTool):
             PrintUtils.print_success("MSYS2 安装成功!")
             if msys2_install_path:
                 PrintUtils.print_info(f"MSYS2 安装路径: {msys2_install_path}")
-            PrintUtils.print_warning("注意: 如果 MSYS2 安装程序不支持自定义路径，可能仍会安装到默认位置 C:\\msys64")
+
             return True
         else:
             PrintUtils.print_error("MSYS2 安装失败")
