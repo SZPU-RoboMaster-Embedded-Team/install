@@ -32,10 +32,16 @@ tools = {
         'tool': 'tools/tool_install_make_cmake.py',
         'dep': []
     },
+    3: {
+        'tip': '一键安装: OpenOCD (通过 MSYS2)',
+        'type': INSTALL_DEV,
+        'tool': 'tools/tool_install_openocd.py',
+        'dep': []
+    },
     # 后续可以添加更多工具
-    # 3: {'tip':'一键安装: Git for Windows', 'type':INSTALL_DEV, 'tool':'tools/tool_install_git.py', 'dep':[]},
-    # 4: {'tip':'一键安装: VSCode', 'type':INSTALL_DEV, 'tool':'tools/tool_install_vscode.py', 'dep':[]},
-    # 5: {'tip':'一键安装: Python', 'type':INSTALL_DEV, 'tool':'tools/tool_install_python.py', 'dep':[]},
+    # 4: {'tip':'一键安装: Git for Windows', 'type':INSTALL_DEV, 'tool':'tools/tool_install_git.py', 'dep':[]},
+    # 5: {'tip':'一键安装: VSCode', 'type':INSTALL_DEV, 'tool':'tools/tool_install_vscode.py', 'dep':[]},
+    # 6: {'tip':'一键安装: Python', 'type':INSTALL_DEV, 'tool':'tools/tool_install_python.py', 'dep':[]},
 }
 
 # 创建用于存储不同类型工具的字典
