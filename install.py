@@ -89,7 +89,6 @@ def main():
     from tools.base import CmdTask, FileUtils, PrintUtils, ChooseTask, ChooseWithCategoriesTask
     from tools.base import osversion, osarch
     from tools.base import run_tool_file
-    from tools.base import config_helper
 
     # 打印欢迎信息
     tip = """
@@ -140,9 +139,7 @@ def main():
         # 运行选中的工具
         run_tool_file(tools[code]['tool'].replace("/", "."))
 
-    # 生成配置文件
-    if os.environ.get('GITHUB_ACTIONS') != 'true' and os.environ.get('FISH_INSTALL_CONFIG') is None:
-        config_helper.gen_config_file()
+    if os.environ.get('GITHUB_ACTIONS') != 'true':
         PrintUtils.print_delay("欢迎加入机器人学习交流QQ群：438144612 (入群口令：一键安装)", 0.05)
         PrintUtils.print_delay(
             "鱼香小铺正式开业，最低599可入手一台能建图会导航的移动机器人，淘宝搜店：鱼香ROS",

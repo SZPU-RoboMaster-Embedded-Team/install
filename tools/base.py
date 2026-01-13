@@ -6,7 +6,6 @@ import subprocess
 import platform
 import urllib.request
 import urllib.error
-from queue import Queue
 
 # 启用 Windows 控制台颜色支持
 if platform.system() == 'Windows':
@@ -27,13 +26,6 @@ except:
     # 如果配置文件不存在，使用默认值
     WINGET_INSTALL_PATH = r'D:\wingetApp'
 
-# 检测是否有 yaml 模块
-have_yaml_module = False
-try:
-    import yaml
-    have_yaml_module = True
-except:
-    print('WARN: No Yaml Module!')
 
 # Windows 平台检测
 is_windows = platform.system() == 'Windows'
@@ -57,89 +49,6 @@ def check_admin():
         return False
 
 
-class ConfigHelper():
-    """配置文件助手"""
-    def __init__(self, record_file=None):
-        self.record_input_queue = Queue()
-        self.record_file = record_file
-        if self.record_file is None:
-            self.record_file = os.environ.get('FISH_INSTALL_CONFIG', "./fish_install.yaml")
-        self.default_input_queue = self.get_default_queue(self.record_file)
-
-    def record_input(self, item):
-        self.record_input_queue.put(item)
-
-    def gen_config_file(self):
-        """生成配置文件"""
-        config_yaml = {}
-        chooses = []
-
-        while self.record_input_queue.qsize() > 0:
-            chooses.append(self.record_input_queue.get())
-
-        config_yaml['chooses'] = chooses
-        config_yaml['time'] = str(time.time())
-
-        temp_path = os.path.join(os.environ.get('TEMP', '.'), 'fish_install_temp.yaml')
-        target_path = os.path.join(os.environ.get('TEMP', '.'), 'fish_install.yaml')
-
-        try:
-            with open(temp_path, "w", encoding="utf-8") as f:
-                if have_yaml_module:
-                    yaml.dump(config_yaml, f, allow_unicode=True)
-
-            if os.path.exists(target_path):
-                print("检测到已存在的配置文件: {}".format(target_path))
-                user_input = input("是否替换该文件？[y/N]: ")
-                if user_input.lower() not in ['y', 'yes']:
-                    print("取消替换，保留原配置文件")
-                    os.remove(temp_path)
-                    return
-                os.remove(target_path)
-
-            os.rename(temp_path, target_path)
-            print("配置文件已保存至: {}".format(target_path))
-        except Exception as e:
-            print("配置文件生成过程中发生错误: {}".format(str(e)))
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-
-    def get_input_value(self):
-        if self.default_input_queue.qsize() > 0:
-            return self.default_input_queue.get()
-
-    def record_choose(self, data):
-        self.record_input_queue.put(data)
-
-    def get_default_queue(self, param_file_path):
-        """获取默认的配置"""
-        config_data = None
-        choose_queue = Queue()
-
-        if not have_yaml_module:
-            return choose_queue
-
-        if not os.path.exists(param_file_path):
-            return choose_queue
-
-        with open(param_file_path, "r", encoding="utf-8") as f:
-            config_data = f.read()
-
-        if config_data is None:
-            return choose_queue
-
-        if hasattr(yaml, 'FullLoader'):
-            config_yaml = yaml.load(config_data, Loader=yaml.FullLoader)
-        else:
-            config_yaml = yaml.load(config_data)
-
-        for choose in config_yaml['chooses']:
-            choose_queue.put(choose)
-
-        return choose_queue
-
-
-config_helper = ConfigHelper()
 
 
 class PrintUtils:
@@ -650,12 +559,6 @@ class ChooseTask:
 
     def run(self):
         """运行选择任务"""
-        # 检查是否有默认配置
-        default_value = config_helper.get_input_value()
-        if default_value is not None:
-            PrintUtils.print_info(f"使用配置文件中的选项: {default_value['choose']}")
-            return default_value['choose'], self.options.get(default_value['choose'])
-
         print(f"\n{self.tips}")
         for key, value in self.options.items():
             print(f"  {key}. {value}")
@@ -665,11 +568,6 @@ class ChooseTask:
                 choice = input("\n请输入选项编号: ").strip()
                 choice_num = int(choice)
                 if choice_num in self.options:
-                    # 记录选择
-                    config_helper.record_choose({
-                        'choose': choice_num,
-                        'desc': self.options[choice_num]
-                    })
                     return choice_num, self.options[choice_num]
                 else:
                     PrintUtils.print_warning("无效的选项，请重新输入")
@@ -689,12 +587,6 @@ class ChooseWithCategoriesTask:
 
     def run(self):
         """运行选择任务"""
-        # 检查是否有默认配置
-        default_value = config_helper.get_input_value()
-        if default_value is not None:
-            PrintUtils.print_info(f"使用配置文件中的选项: {default_value['choose']}")
-            return default_value['choose'], None
-
         print(f"\n{self.tips}")
         for category_id, tools in self.tool_categories.items():
             category_name = self.categories.get(category_id, f"分类 {category_id}")
@@ -713,11 +605,6 @@ class ChooseWithCategoriesTask:
                 # 查找工具
                 for tools in self.tool_categories.values():
                     if choice_num in tools:
-                        # 记录选择
-                        config_helper.record_choose({
-                            'choose': choice_num,
-                            'desc': tools[choice_num]['tip']
-                        })
                         return choice_num, tools[choice_num]
 
                 PrintUtils.print_warning("无效的选项，请重新输入")

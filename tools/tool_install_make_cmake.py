@@ -110,6 +110,61 @@ class Tool(BaseTool):
             return True
         return False
 
+    def check_package_installed(self, bash_path, package_name):
+        """检查包是否已安装
+        
+        Args:
+            bash_path: MSYS2 bash.exe 的路径
+            package_name: 包名（pacman 中的名称）
+            
+        Returns:
+            bool: 如果已安装返回 True，否则返回 False
+        """
+        try:
+            result = subprocess.run(
+                [bash_path, '-lc', f'pacman -Q {package_name}'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=10
+            )
+            return result.returncode == 0
+        except:
+            return False
+
+    def check_packages_installed(self):
+        """检查所有包是否已安装
+        
+        Returns:
+            tuple: (是否全部已安装, 已安装的包列表, 未安装的包列表)
+        """
+        msys2_path = self.get_msys2_path()
+        if not msys2_path:
+            return False, [], []
+        
+        bash_path = os.path.join(msys2_path, 'usr', 'bin', 'bash.exe')
+        if not os.path.exists(bash_path):
+            return False, [], []
+        
+        packages = [
+            ('gcc', 'GCC'),
+            ('make', 'Make'),
+            ('cmake', 'CMake')
+        ]
+        
+        installed = []
+        not_installed = []
+        
+        for package_name, display_name in packages:
+            if self.check_package_installed(bash_path, package_name):
+                installed.append((package_name, display_name))
+            else:
+                not_installed.append((package_name, display_name))
+        
+        all_installed = len(not_installed) == 0
+        return all_installed, installed, not_installed
+
     def install_package(self, bash_path, package_name, display_name):
         """安装单个包
         
@@ -168,21 +223,33 @@ class Tool(BaseTool):
             return False
 
         PrintUtils.print_info("开始安装 GCC、Make 和 CMake...")
-        # PrintUtils.print_info("将依次安装，每完成一个会显示提示")
         PrintUtils.print_info("")
         
         # 定义要安装的包列表
-        packages = [
+        all_packages = [
             ('gcc', 'GCC'),
             ('make', 'Make'),
             ('cmake', 'CMake')
         ]
         
+        # 过滤出未安装的包
+        packages_to_install = []
+        for package_name, display_name in all_packages:
+            if not self.check_package_installed(bash_path, package_name):
+                packages_to_install.append((package_name, display_name))
+            else:
+                PrintUtils.print_info(f"{display_name} 已安装，跳过")
+                PrintUtils.print_info("")
+        
+        if not packages_to_install:
+            PrintUtils.print_success("所有工具都已安装!")
+            return True
+        
         success_count = 0
         failed_packages = []
         
-        # 依次安装每个包
-        for package_name, display_name in packages:
+        # 依次安装每个未安装的包
+        for package_name, display_name in packages_to_install:
             if self.install_package(bash_path, package_name, display_name):
                 success_count += 1
             else:
@@ -190,11 +257,11 @@ class Tool(BaseTool):
             PrintUtils.print_info("")  # 空行分隔
         
         # 总结安装结果
-        if success_count == len(packages):
+        if success_count == len(packages_to_install):
             PrintUtils.print_success("所有工具安装完成!")
             return True
         elif success_count > 0:
-            PrintUtils.print_warning(f"部分安装完成: {success_count}/{len(packages)} 个工具安装成功")
+            PrintUtils.print_warning(f"部分安装完成: {success_count}/{len(packages_to_install)} 个工具安装成功")
             if failed_packages:
                 PrintUtils.print_warning(f"安装失败的工具: {', '.join(failed_packages)}")
             return False
@@ -215,6 +282,30 @@ class Tool(BaseTool):
             PrintUtils.print_info("请先使用工具 1 安装 MSYS2，然后再运行此工具")
             PrintUtils.print_info("MSYS2 是安装 GCC、Make 和 CMake 的前置依赖")
             return
+
+        # 检查是否已安装
+        all_installed, installed, not_installed = self.check_packages_installed()
+        if all_installed:
+            PrintUtils.print_success("检测到所有工具已安装:")
+            for package_name, display_name in installed:
+                PrintUtils.print_info(f"  - {display_name}")
+            PrintUtils.print_info("")
+            choice = input("是否重新安装？[y/N]: ").strip().lower()
+            if choice not in ['y', 'yes']:
+                PrintUtils.print_info("跳过安装")
+                return
+        elif installed:
+            PrintUtils.print_info("检测到部分工具已安装:")
+            for package_name, display_name in installed:
+                PrintUtils.print_success(f"  ✓ {display_name}")
+            PrintUtils.print_info("未安装的工具:")
+            for package_name, display_name in not_installed:
+                PrintUtils.print_warning(f"  ✗ {display_name}")
+            PrintUtils.print_info("")
+            choice = input("是否继续安装未安装的工具？[Y/n]: ").strip().lower()
+            if choice in ['n', 'no']:
+                PrintUtils.print_info("取消安装")
+                return
 
         # 执行安装
         if self.install_make_cmake():

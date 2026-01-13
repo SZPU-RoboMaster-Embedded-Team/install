@@ -110,6 +110,29 @@ class Tool(BaseTool):
             return True
         return False
 
+    def check_package_installed(self, bash_path, package_name):
+        """检查包是否已安装
+        
+        Args:
+            bash_path: MSYS2 bash.exe 的路径
+            package_name: 包名（pacman 中的名称）
+            
+        Returns:
+            bool: 如果已安装返回 True，否则返回 False
+        """
+        try:
+            result = subprocess.run(
+                [bash_path, '-lc', f'pacman -Q {package_name}'],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                timeout=10
+            )
+            return result.returncode == 0
+        except:
+            return False
+
     def install_package(self, bash_path, package_name, display_name):
         """安装单个包
         
@@ -194,6 +217,18 @@ class Tool(BaseTool):
             PrintUtils.print_info("请先使用工具 1 安装 MSYS2，然后再运行此工具")
             PrintUtils.print_info("MSYS2 是安装 OpenOCD 的前置依赖")
             return
+
+        # 检查是否已安装
+        msys2_path = self.get_msys2_path()
+        bash_path = os.path.join(msys2_path, 'usr', 'bin', 'bash.exe')
+        package_name = 'mingw-w64-x86_64-openocd'
+        if self.check_package_installed(bash_path, package_name):
+            PrintUtils.print_success("检测到 OpenOCD 已安装")
+            PrintUtils.print_info("")
+            choice = input("是否重新安装？[y/N]: ").strip().lower()
+            if choice not in ['y', 'yes']:
+                PrintUtils.print_info("跳过安装")
+                return
 
         # 执行安装
         if self.install_openocd():
