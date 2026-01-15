@@ -126,18 +126,22 @@ def main():
     PrintUtils.print_info(f"Python 版本: {sys.version.split()[0]}")
     print()
 
-    # 选择工具
-    code, result = ChooseWithCategoriesTask(
-        tool_categories,
-        tips="--- 众多工具，等君来用 ---",
-        categories=tools_type_map
-    ).run()
+    # 循环选择工具：运行完成后返回主菜单，直到用户选择 0 退出
+    while True:
+        code, result = ChooseWithCategoriesTask(
+            tool_categories,
+            tips="--- 众多工具，等君来用 ---",
+            categories=tools_type_map
+        ).run()
 
-    if code == 0:
-        PrintUtils.print_success("是觉得没有合胃口的菜吗？那快联系小鱼增加菜单吧~")
-    else:
-        # 运行选中的工具
-        run_tool_file(tools[code]['tool'].replace("/", "."))
+        if code == 0:
+            PrintUtils.print_success("是觉得没有合胃口的菜吗？那快联系小鱼增加菜单吧~")
+            break
+
+        # 运行选中的工具（工具失败不影响继续回到主菜单）
+        ok = run_tool_file(tools[code]['tool'].replace("/", "."))
+        if not ok:
+            PrintUtils.print_warning("工具运行失败，但程序将继续运行，你可以返回菜单选择其他工具。")
 
     if os.environ.get('GITHUB_ACTIONS') != 'true':
         PrintUtils.print_delay("欢迎加入机器人学习交流QQ群：438144612 (入群口令：一键安装)", 0.05)

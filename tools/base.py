@@ -368,6 +368,31 @@ class WingetUtils:
 
 class EnvUtils:
     """环境变量配置工具（通用工具类）"""
+
+    @staticmethod
+    def _broadcast_environment_change():
+        """广播环境变量更改消息（带超时，避免 SendMessageW 广播卡死）"""
+        if not is_windows:
+            return
+        try:
+            import ctypes
+            HWND_BROADCAST = 0xFFFF
+            WM_SETTINGCHANGE = 0x001A
+            SMTO_ABORTIFHUNG = 0x0002
+
+            # SendMessageTimeoutW 比 SendMessageW 更安全：遇到无响应窗口不会无限等待
+            ctypes.windll.user32.SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SETTINGCHANGE,
+                0,
+                "Environment",
+                SMTO_ABORTIFHUNG,
+                2000,  # 2s timeout
+                None
+            )
+        except Exception:
+            # 广播失败不影响 PATH 写入生效（新开的终端仍会读取到注册表）
+            pass
     
     @staticmethod
     def add_to_system_path(paths, skip_if_not_admin=True):
@@ -426,15 +451,9 @@ class EnvUtils:
                 new_path = os.pathsep.join(path_list)
                 winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
                 winreg.CloseKey(key)
-                
-                # 广播环境变量更改消息
-                import ctypes
-                ctypes.windll.user32.SendMessageW(
-                    0xFFFF,  # HWND_BROADCAST
-                    0x001A,  # WM_SETTINGCHANGE
-                    0,
-                    "Environment"
-                )
+
+                # 广播环境变量更改消息（带超时，避免卡死）
+                EnvUtils._broadcast_environment_change()
                 
                 PrintUtils.print_success("已添加以下路径到系统PATH:")
                 for p in added_paths:
@@ -499,15 +518,9 @@ class EnvUtils:
                 new_path = os.pathsep.join(path_list)
                 winreg.SetValueEx(key, "Path", 0, winreg.REG_EXPAND_SZ, new_path)
                 winreg.CloseKey(key)
-                
-                # 广播环境变量更改消息
-                import ctypes
-                ctypes.windll.user32.SendMessageW(
-                    0xFFFF,  # HWND_BROADCAST
-                    0x001A,  # WM_SETTINGCHANGE
-                    0,
-                    "Environment"
-                )
+
+                # 广播环境变量更改消息（带超时，避免卡死）
+                EnvUtils._broadcast_environment_change()
                 
                 PrintUtils.print_success("已添加以下路径到用户PATH:")
                 for p in added_paths:
