@@ -4,6 +4,7 @@ import sys
 import time
 import subprocess
 import platform
+import re
 import urllib.request
 import urllib.error
 
@@ -232,7 +233,57 @@ class WingetUtils:
             cmd += f' --location "{install_location}"'
             PrintUtils.print_info(f"安装路径: {install_location}")
 
-        return CmdTask(cmd).run()
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=False
+            )
+
+            def _decode_output(raw_bytes):
+                if not raw_bytes:
+                    return ""
+                for encoding in ['utf-8', 'gbk', 'gb2312', 'cp936', 'latin-1']:
+                    try:
+                        return raw_bytes.decode(encoding, errors='replace')
+                    except Exception:
+                        continue
+                return raw_bytes.decode('utf-8', errors='replace')
+
+            stdout_text = _decode_output(result.stdout)
+            stderr_text = _decode_output(result.stderr)
+
+            if stdout_text.strip():
+                print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+            if stderr_text.strip():
+                print(stderr_text, end="" if stderr_text.endswith("\n") else "\n")
+
+            if result.returncode == 0:
+                return True
+
+            # winget 已安装且无可升级版本时可能返回非 0，按成功处理
+            combined = f"{stdout_text}\n{stderr_text}".lower()
+            no_upgrade_markers = [
+                "找到已安装的现有包",
+                "找不到可用的升级",
+                "没有可用的较新的包版本",
+                "already installed",
+                "no available upgrade",
+                "no applicable upgrade found",
+            ]
+            if any(marker in combined for marker in no_upgrade_markers):
+                installed_versions = WingetUtils.list_installed_versions(package_id)
+                if installed_versions:
+                    PrintUtils.print_info(
+                        f"{package_id} 已安装（无可升级版本），将继续后续流程"
+                    )
+                    return True
+
+            return False
+        except Exception as e:
+            PrintUtils.print_error(f"执行 winget install 失败: {e}")
+            return False
 
     @staticmethod
     def search(keyword):
@@ -626,6 +677,87 @@ class ChooseWithCategoriesTask:
             except KeyboardInterrupt:
                 print("\n\n用户取消操作")
                 return 0, None
+
+
+class ConfigUtils:
+    """配置文件工具类"""
+
+    @staticmethod
+    def _to_raw_string(path):
+        """将路径安全转换为 Python 原始字符串字面量内容"""
+        return path.replace("\\", "\\\\").replace("'", "\\'")
+
+    @staticmethod
+    def persist_install_base_path(base_path, config_file=None):
+        """持久化安装根目录并刷新运行时配置"""
+        if not base_path:
+            PrintUtils.print_error("安装路径不能为空")
+            return False
+
+        normalized = os.path.abspath(os.path.expanduser(base_path.strip().strip('"').strip("'")))
+        config_path = config_file or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "config.py"
+        )
+
+        if not os.path.exists(config_path):
+            PrintUtils.print_error(f"配置文件不存在: {config_path}")
+            return False
+
+        msys2_path = os.path.join(normalized, "msys64")
+        arm_gcc_path = os.path.join(normalized, "Compiler")
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            base_raw = ConfigUtils._to_raw_string(normalized)
+            msys2_raw = ConfigUtils._to_raw_string(msys2_path)
+            arm_raw = ConfigUtils._to_raw_string(arm_gcc_path)
+
+            content = re.sub(
+                r"WINGET_INSTALL_PATH\s*=\s*r'[^']*'",
+                lambda _: f"WINGET_INSTALL_PATH = r'{base_raw}'",
+                content,
+                count=1
+            )
+            content = re.sub(
+                r"MSYS2_PATHS\s*=\s*\[[\s\S]*?\]",
+                lambda _: (
+                    "MSYS2_PATHS = [\n"
+                    f"    r'{msys2_raw}',  # 期望的安装路径\n"
+                    f"    r'{base_raw}',  # 兼容已安装在此路径的情况\n"
+                    "    r'C:\\msys64',\n"
+                    "    r'C:\\msys32',\n"
+                    "]"
+                ),
+                content,
+                count=1
+            )
+            content = re.sub(
+                r"ARM_GCC_INSTALL_DIR\s*=\s*r'[^']*'",
+                lambda _: f"ARM_GCC_INSTALL_DIR = r'{arm_raw}'",
+                content,
+                count=1
+            )
+
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            PrintUtils.print_error(f"写入配置文件失败: {e}")
+            return False
+
+        # 同步当前进程中的配置模块，确保本次运行立即生效
+        config_module = sys.modules.get("config")
+        if config_module:
+            config_module.WINGET_INSTALL_PATH = normalized
+            config_module.MSYS2_PATHS = [msys2_path, normalized, r"C:\msys64", r"C:\msys32"]
+            config_module.ARM_GCC_INSTALL_DIR = arm_gcc_path
+
+        global WINGET_INSTALL_PATH
+        WINGET_INSTALL_PATH = normalized
+        WingetUtils.DEFAULT_INSTALL_PATH = normalized
+        return True
 
 
 class BaseTool:

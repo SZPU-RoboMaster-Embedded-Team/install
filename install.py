@@ -86,7 +86,7 @@ def main():
         return False
 
     # 导入工具类
-    from tools.base import CmdTask, FileUtils, PrintUtils, ChooseTask, ChooseWithCategoriesTask
+    from tools.base import CmdTask, FileUtils, PrintUtils, ChooseTask, ChooseWithCategoriesTask, ConfigUtils
     from tools.base import osversion, osarch
     from tools.base import run_tool_file
 
@@ -95,36 +95,72 @@ def main():
 ===============================================================================
 ======  欢迎使用 Windows 一键安装工具，让软件安装更简单！  ======
 ======  本工具基于 fishros/install 项目，适配 Windows 平台  ======
-======  项目地址: https://github.com/fishros/install_make  ======
 ===============================================================================
     """
 
-    book = """
-                    .-~~~~~~~~~-._       _.-~~~~~~~~~-.
-                __.'              ~.   .~              `.__
-            .'//     开卷有益        \./     书山有路     \\ `.
-            .'// 可以多看看小鱼的文章  | 关注B站鱼香ROS机器人 \\ `.
-        .'// .-~~~~~~~~~~~~~~-._     |     _,-~~~~~~~~~~~. \\`.
-        .'//.-"                 `-.  |  .-'                 "-.\\`.
-    .'//______.============-..   \ | /   ..-============.______\\`.
-    .'______________________________\|/______________________________`
-    ----------------------------------------------------------------------
-    """
+#     book = """
+#                     .-~~~~~~~~~-._       _.-~~~~~~~~~-.
+#                 __.'              ~.   .~              `.__
+#             .'//     开卷有益        \./     书山有路     \\ `.
+#             .'// 可以多看看小鱼的文章  | 关注B站鱼香ROS机器人 \\ `.
+#         .'// .-~~~~~~~~~~~~~~-._     |     _,-~~~~~~~~~~~. \\`.
+#         .'//.-"                 `-.  |  .-'                 "-.\\`.
+#     .'//______.============-..   \ | /   ..-============.______\\`.
+#     .'______________________________\|/______________________________`
+#     ----------------------------------------------------------------------
+#     """
 
-    end_tip = """
-===============================================================================
-如果觉得工具好用，请给个 star，如果你想和小鱼一起编写工具，请关注 B站/公众号 <鱼香ROS>
-更多工具教程，请访问鱼香ROS官方网站: http://fishros.com
-    """
+#     end_tip = """
+# ===============================================================================
+# 如果觉得工具好用，请给个 star，如果你想和小鱼一起编写工具，请关注 B站/公众号 <鱼香ROS>
+# 更多工具教程，请访问鱼香ROS官方网站: http://fishros.com
+#     """
 
     PrintUtils.print_delay(tip, 0.001)
-    PrintUtils.print_delay(book, 0.001)
+    # PrintUtils.print_delay(book, 0.001)
 
     # 显示系统信息
     PrintUtils.print_info(f"系统版本: {osversion}")
     PrintUtils.print_info(f"系统架构: {osarch}")
     PrintUtils.print_info(f"Python 版本: {sys.version.split()[0]}")
     print()
+
+    # 启动时让用户选择安装目录（默认/自定义）
+    try:
+        import config
+        current_base_path = getattr(config, "WINGET_INSTALL_PATH", r"D:\CodeTools")
+    except Exception:
+        current_base_path = r"D:\CodeTools"
+
+    PrintUtils.print_info(f"当前默认安装目录: {current_base_path}")
+    path_options = {
+        1: "使用默认路径",
+        2: "使用自定义路径（支持粘贴）",
+    }
+    path_code, _ = ChooseTask(path_options, "请选择安装目录模式:").run()
+    if path_code == 0:
+        PrintUtils.print_info("用户取消，程序退出")
+        return False
+
+    selected_base_path = current_base_path
+    if path_code == 2:
+        while True:
+            pasted_path = input("\n请粘贴安装根目录路径: ").strip().strip('"').strip("'")
+            if not pasted_path:
+                PrintUtils.print_warning("路径不能为空，请重新输入")
+                continue
+
+            selected_base_path = os.path.abspath(os.path.expanduser(pasted_path))
+            try:
+                os.makedirs(selected_base_path, exist_ok=True)
+                PrintUtils.print_info(f"已确认安装目录: {selected_base_path}")
+                break
+            except Exception as e:
+                PrintUtils.print_error(f"无法创建目录: {e}")
+
+    # 持久化到配置文件，并刷新本次运行的路径设置
+    if not ConfigUtils.persist_install_base_path(selected_base_path):
+        PrintUtils.print_warning("安装目录写入配置失败，将继续使用当前运行时配置")
 
     # 循环选择工具：运行完成后返回主菜单，直到用户选择 0 退出
     while True:

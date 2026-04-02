@@ -6,15 +6,6 @@
 
 这是一个专为 Windows 平台设计的一键安装工具，灵感来源于小鱼的 [fishros/install](https://github.com/fishros/install) 项目。本工具使用 Python 编写，通过 winget 包管理器实现软件的快速安装和配置。
 
-## 特性
-
-- ✅ 使用 **winget** 作为包管理器（Windows 官方支持）
-- ✅ 使用 **Python** 编写，跨平台兼容性好
-- ✅ 使用 **Python 内置库**处理下载，无需额外依赖
-- ✅ 交互式菜单，操作简单
-- ✅ 支持配置文件自动化安装
-- ✅ 模块化设计，易于扩展
-
 ## 已支持工具列表
 
 - ✅ 一键安装: MSYS2 (Windows 上的类 Unix 环境)
@@ -33,7 +24,7 @@
 
 ### 方法一：使用批处理脚本（推荐）
 
-1. 双击运行 `run.bat`
+1. 右键,以管理员身份运行 `run.bat`
 2. 按照提示选择要安装的工具
 
 ### 方法二：使用 Python 直接运行
@@ -42,12 +33,14 @@
 python install.py
 ```
 
-### 方法三：在线一键安装（开发中）
+### 方法三：直接运行exe
 
-```powershell
-# 计划支持类似 Linux 版本的在线安装方式
-# powershell -c "irm http://fishros.com/install_win | iex"
-```
+- 右键,以管理员身份运行install.exe
+
+> 说明：
+> - `--collect-submodules tools` 用于收集 `tools/` 下通过动态导入加载的模块。
+> - 本工具是交互式命令行程序，建议保留控制台窗口（不要使用 `--noconsole`）。
+> - `build_exe.bat` 会自动清理旧构建产物并重新生成以上目录。
 
 ## 项目结构
 
@@ -67,7 +60,13 @@ install_make/
 
 ## 自定义安装路径
 
-默认情况下，所有通过 winget 安装的软件会尝试安装到 `D:\wingetApp` 目录。
+默认情况下，所有通过 winget 安装的软件会尝试安装到 `D:\CodeTools` 目录。
+
+程序启动后会先提示你选择安装目录模式：
+- `1. 默认路径`
+- `2. 自定义路径（支持直接粘贴）`
+
+选择自定义路径后，工具会自动创建目录（若不存在），并将路径写回 `config.py`，下次启动会继续使用该路径。
 
 ### 快速修改
 
@@ -75,7 +74,7 @@ install_make/
 
 ```python
 # 修改为你想要的安装路径
-WINGET_INSTALL_PATH = r'D:\wingetApp'  # 可以改为 E:\MyApps 等
+WINGET_INSTALL_PATH = r'D:\CodeTools'  # 可以改为 E:\MyApps 等
 ```
 
 ### 详细说明
@@ -167,13 +166,13 @@ time: '1704844800.0'
 
 ## 与 Linux 版本的对应关系
 
-| Linux 版本 | Windows 版本 | 说明 |
-|-----------|-------------|------|
-| apt | winget | 包管理器 |
-| wget/curl | urllib | 下载工具 |
-| bash | Python | 脚本语言 |
-| /tmp/ | %TEMP% | 临时目录 |
-| sudo | 管理员权限 | 权限提升 |
+| Linux 版本 | Windows 版本 | 说明     |
+| ---------- | ------------ | -------- |
+| apt        | winget       | 包管理器 |
+| wget/curl  | urllib       | 下载工具 |
+| bash       | Python       | 脚本语言 |
+| /tmp/      | %TEMP%       | 临时目录 |
+| sudo       | 管理员权限   | 权限提升 |
 
 ## 常见问题
 
