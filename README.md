@@ -229,7 +229,6 @@ winget install Python.Python.3
 - 原项目（Linux 版本）: https://github.com/fishros/install
 - 鱼香ROS官网: http://fishros.com
 - B站: 鱼香ROS机器人
-- QQ群: 438144612 (入群口令：一键安装)
 
 ## 开源协议
 
@@ -238,3 +237,5 @@ winget install Python.Python.3
 ---
 
 **如果觉得工具好用，请给个 Star ⭐**
+
+

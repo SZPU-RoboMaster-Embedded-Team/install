@@ -47,7 +47,7 @@ if not exist "%BUILD_DIR%" mkdir "%BUILD_DIR%"
 if not exist "%SPEC_DIR%" mkdir "%SPEC_DIR%"
 
 echo [INFO] Packaging...
-python -m PyInstaller --noconfirm --clean --onefile --name install --collect-submodules tools --distpath "%DIST_DIR%" --workpath "%WORK_DIR%" --specpath "%SPEC_DIR%" install.py
+python -m PyInstaller --noconfirm --clean --onefile --uac-admin --name install --collect-submodules tools --add-data "%~dp0config.py;." --distpath "%DIST_DIR%" --workpath "%WORK_DIR%" --specpath "%SPEC_DIR%" install.py
 if %errorlevel% neq 0 (
     echo.
     echo [ERROR] Packaging failed.

@@ -6,6 +6,44 @@ Windows 平台一键安装工具
 """
 import os
 import sys
+import ctypes
+import subprocess
+
+
+def _ensure_persistent_config_on_windows():
+    """EXE(onefile) 场景：确保使用可持久化的 config.py（不写入 _MEI 临时目录）。
+
+    - 优先路径: %LOCALAPPDATA%\\fishros_install\\config.py
+    - 若不存在且当前为 frozen，则尝试从 sys._MEIPASS\\config.py 拷贝
+    """
+    if os.name != "nt":
+        return
+
+    try:
+        local_appdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if not local_appdata:
+            return
+
+        cfg_dir = os.path.join(local_appdata, "fishros_install")
+        cfg_path = os.path.join(cfg_dir, "config.py")
+        os.makedirs(cfg_dir, exist_ok=True)
+
+        # 若 config.py 不存在且为 EXE 模式，尝试从打包内置模板拷贝一份
+        if not os.path.exists(cfg_path) and getattr(sys, "frozen", False):
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                bundled = os.path.join(meipass, "config.py")
+                if os.path.exists(bundled):
+                    import shutil
+                    shutil.copyfile(bundled, cfg_path)
+
+        # 让 import config 优先从持久化目录加载
+        if os.path.exists(cfg_path):
+            if cfg_dir not in sys.path:
+                sys.path.insert(0, cfg_dir)
+    except Exception:
+        # 任何异常不影响主流程
+        return
 
 # 工具类型定义
 INSTALL_SOFTWARE = 0  # 安装软件
@@ -79,11 +117,58 @@ def check_environment():
     return True
 
 
+def is_admin():
+    """检查当前进程是否具备管理员权限。"""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def relaunch_as_admin():
+    """在 Windows 下以管理员权限重启当前脚本/程序。"""
+    if getattr(sys, "frozen", False):
+        executable = sys.executable
+        params = subprocess.list2cmdline(sys.argv[1:])
+    else:
+        executable = sys.executable
+        script_path = os.path.abspath(__file__)
+        params = subprocess.list2cmdline([script_path] + sys.argv[1:])
+
+    rc = ctypes.windll.shell32.ShellExecuteW(
+        None,
+        "runas",
+        executable,
+        params,
+        None,
+        1,
+    )
+    return rc > 32
+
+
+def ensure_admin_on_windows():
+    """如果不是管理员，则触发 UAC 提权并退出当前进程。"""
+    if os.name != "nt":
+        return True
+
+    if is_admin():
+        return True
+
+    print("检测到当前不是管理员权限，正在请求提权...")
+    if relaunch_as_admin():
+        return False
+
+    print("管理员权限请求失败，或已取消 UAC。")
+    return False
+
+
 def main():
     """主函数"""
     # 检查环境
     if not check_environment():
         return False
+
+    _ensure_persistent_config_on_windows()
 
     # 导入工具类
     from tools.base import CmdTask, FileUtils, PrintUtils, ChooseTask, ChooseWithCategoriesTask, ConfigUtils
@@ -116,6 +201,8 @@ def main():
 # 更多工具教程，请访问鱼香ROS官方网站: http://fishros.com
 #     """
 
+    end_tip = ""
+
     PrintUtils.print_delay(tip, 0.001)
     # PrintUtils.print_delay(book, 0.001)
 
@@ -131,6 +218,14 @@ def main():
         current_base_path = getattr(config, "WINGET_INSTALL_PATH", r"D:\CodeTools")
     except Exception:
         current_base_path = r"D:\CodeTools"
+
+    # 如果默认安装目录不存在，自动回退到 D:\CodeTools（按用户期望，不自动创建错误目录）
+    fallback_base_path = r"D:\CodeTools"
+    try:
+        if not current_base_path or not os.path.isdir(current_base_path):
+            current_base_path = fallback_base_path
+    except Exception:
+        current_base_path = fallback_base_path
 
     PrintUtils.print_info(f"当前默认安装目录: {current_base_path}")
     path_options = {
@@ -157,6 +252,13 @@ def main():
                 break
             except Exception as e:
                 PrintUtils.print_error(f"无法创建目录: {e}")
+    else:
+        # 默认模式也确保回退目录存在（只创建 D:\CodeTools，不创建用户配置里的错误路径）
+        try:
+            if selected_base_path == fallback_base_path:
+                os.makedirs(selected_base_path, exist_ok=True)
+        except Exception as e:
+            PrintUtils.print_warning(f"无法创建默认安装目录 {selected_base_path}: {e}")
 
     # 持久化到配置文件，并刷新本次运行的路径设置
     if not ConfigUtils.persist_install_base_path(selected_base_path):
@@ -171,7 +273,7 @@ def main():
         ).run()
 
         if code == 0:
-            PrintUtils.print_success("是觉得没有合胃口的菜吗？那快联系小鱼增加菜单吧~")
+            PrintUtils.print_success("是觉得没有合胃口的菜吗？提交issue增加菜单吧~")
             break
 
         # 运行选中的工具（工具失败不影响继续回到主菜单）
@@ -180,13 +282,13 @@ def main():
             PrintUtils.print_warning("工具运行失败，但程序将继续运行，你可以返回菜单选择其他工具。")
 
     if os.environ.get('GITHUB_ACTIONS') != 'true':
-        PrintUtils.print_delay("欢迎加入机器人学习交流QQ群：438144612 (入群口令：一键安装)", 0.05)
+        PrintUtils.print_delay("", 0.05)
         PrintUtils.print_delay(
-            "鱼香小铺正式开业，最低599可入手一台能建图会导航的移动机器人，淘宝搜店：鱼香ROS",
+            "",
             0.001
         )
         PrintUtils.print_delay(
-            "如在使用过程中遇到问题，请打开：https://fishros.org.cn/forum 进行反馈",
+            "如在使用过程中遇到问题，请提交issue进行反馈",
             0.001
         )
 
@@ -197,6 +299,8 @@ if __name__ == '__main__':
     run_exc = []
 
     try:
+        if not ensure_admin_on_windows():
+            sys.exit(0)
         main()
     except KeyboardInterrupt:
         print("\n\n用户取消操作")

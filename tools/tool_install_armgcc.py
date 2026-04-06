@@ -1,151 +1,373 @@
 # -*- coding: utf-8 -*-
 from .base import BaseTool
-from .base import PrintUtils, EnvUtils
+from .base import PrintUtils, CmdTask, FileUtils, EnvUtils, check_admin
+from .base import osversion, osarch
 import os
 import sys
-import subprocess
-
+import json
+import re
+import zipfile
+import shutil
+import urllib.request
+import urllib.error
 
 class Tool(BaseTool):
     def __init__(self):
         self.name = "一键安装 ARM GCC 工具链"
         self.type = BaseTool.TYPE_INSTALL
         self.author = '小鱼'
-        self.package_name = 'mingw-w64-x86_64-arm-none-eabi-gcc'
-        self.package_display_name = 'ARM GCC (arm-none-eabi-gcc)'
-
-    def is_valid_msys2_path(self, path):
-        if not path or not os.path.exists(path):
-            return False
-        bash_path = os.path.join(path, 'usr', 'bin', 'bash.exe')
-        if os.path.exists(bash_path):
-            return True
-        pacman_dir = os.path.join(path, 'etc', 'pacman.d')
-        return os.path.exists(pacman_dir)
-
-    def get_msys2_path(self):
-        paths = None
+        
+        # 从配置文件获取安装目录
         try:
+            # 尝试从父目录导入配置
+            parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            if parent_dir not in sys.path:
+                sys.path.insert(0, parent_dir)
             import config
-            if hasattr(config, 'MSYS2_PATHS'):
-                paths = config.MSYS2_PATHS
-        except ImportError:
-            try:
-                parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                if parent_dir not in sys.path:
-                    sys.path.insert(0, parent_dir)
-                import config
-                if hasattr(config, 'MSYS2_PATHS'):
-                    paths = config.MSYS2_PATHS
-            except Exception:
-                pass
+            if hasattr(config, 'ARM_GCC_INSTALL_DIR'):
+                self.install_dir = config.ARM_GCC_INSTALL_DIR
+            else:
+                # 如果配置文件中没有，使用默认值
+                self.install_dir = r'D:\CodeTools\Compiler'
+        except:
+            # 如果导入失败，使用默认值
+            self.install_dir = r'D:\CodeTools\Compiler'
+        
+        # GitHub API 端点
+        self.github_api_url = 'https://api.github.com/repos/carlosperate/arm-none-eabi-gcc-action/releases/latest'
+        
+        # 后备版本（如果无法从 GitHub 获取）
+        self.fallback_version = '15.2.Rel1'
 
-        if paths is None:
-            paths = [r'C:\msys64', r'C:\msys32', os.path.expanduser(r'~\msys64')]
+    def get_latest_version_from_github(self):
+        """使用 GitHub API 获取最新 release，并从 release notes 中解析工具链版本号
+        
+        Returns:
+            str: 工具链版本号，如果获取失败返回 None
+        """
+        try:
+            PrintUtils.print_info("正在从 GitHub 获取最新版本信息...")
+            
+            # 创建请求
+            req = urllib.request.Request(self.github_api_url)
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)')
+            
+            # 发送请求
+            with urllib.request.urlopen(req, timeout=10) as response:
+                data = json.loads(response.read().decode('utf-8'))
+                
+                # 获取 release notes
+                body = data.get('body', '')
+                tag_name = data.get('tag_name', '')
+                
+                PrintUtils.print_info(f"GitHub Release: {tag_name}")
+                
+                # 尝试从 release notes 中解析版本号
+                # 格式可能是: "Add `15.2.Rel1`" 或 "15.2.Rel1" 等
+                # 匹配类似 15.2.Rel1, 14.3.Rel1, 12.3.Rel1 等格式
+                version_patterns = [
+                    r'`?(\d+\.\d+\.Rel\d+)`?',  # 匹配 `15.2.Rel1` 或 15.2.Rel1
+                    r'(\d+\.\d+\.Rel\d+)',      # 匹配 15.2.Rel1
+                    r'(\d+\.\d+-\d{4}-q\d)',    # 匹配旧格式如 10-2020-q4
+                ]
+                
+                for pattern in version_patterns:
+                    match = re.search(pattern, body, re.IGNORECASE)
+                    if match:
+                        version = match.group(1)
+                        PrintUtils.print_success(f"解析到工具链版本: {version}")
+                        return version
+                
+                # 如果无法从 body 中解析，尝试从 tag_name 或其他字段获取
+                PrintUtils.print_warning("无法从 release notes 中解析版本号")
+                return None
+                
+        except urllib.error.URLError as e:
+            PrintUtils.print_warning(f"无法连接到 GitHub API: {e}")
+            return None
+        except json.JSONDecodeError as e:
+            PrintUtils.print_warning(f"解析 GitHub API 响应失败: {e}")
+            return None
+        except Exception as e:
+            PrintUtils.print_warning(f"获取版本信息时发生错误: {e}")
+            return None
 
-        for path in paths:
-            path_name = os.path.basename(path.rstrip(os.sep))
-            is_likely_parent = path_name not in ['msys64', 'msys32']
-            if is_likely_parent and os.path.exists(path):
-                for subdir in ['msys64', 'msys32']:
-                    sub_path = os.path.join(path, subdir)
-                    if self.is_valid_msys2_path(sub_path):
-                        return sub_path
-                continue
-            if self.is_valid_msys2_path(path):
-                return path
+    def get_download_url(self, version):
+        """构建 Arm 官方的下载 URL
+        
+        Args:
+            version: 工具链版本号（如 '15.2.Rel1'）
+            
+        Returns:
+            str: 下载 URL
+        """
+        # Windows x86_64 版本的下载 URL 格式
+        # https://developer.arm.com/-/media/Files/downloads/gnu/{version}/binrel/arm-gnu-toolchain-{version}-mingw-w64-i686-arm-none-eabi.zip
+        base_url = 'https://developer.arm.com/-/media/Files/downloads/gnu'
+        filename = f'arm-gnu-toolchain-{version}-mingw-w64-i686-arm-none-eabi.zip'
+        url = f'{base_url}/{version}/binrel/{filename}'
+        return url
+
+    def download_toolchain(self, version, target_dir):
+        """下载工具链 zip 文件
+        
+        Args:
+            version: 工具链版本号
+            target_dir: 目标目录
+            
+        Returns:
+            str: 下载的文件路径，如果失败返回 None
+        """
+        try:
+            # 确保目标目录存在
+            os.makedirs(target_dir, exist_ok=True)
+            
+            # 构建下载 URL
+            download_url = self.get_download_url(version)
+            PrintUtils.print_info(f"下载 URL: {download_url}")
+            
+            # 临时文件路径
+            temp_dir = os.environ.get('TEMP', '.')
+            zip_filename = f'arm-gnu-toolchain-{version}-mingw-w64-i686-arm-none-eabi.zip'
+            zip_path = os.path.join(temp_dir, zip_filename)
+            
+            # 下载文件
+            if not FileUtils.download(download_url, zip_path):
+                return None
+            
+            return zip_path
+            
+        except Exception as e:
+            PrintUtils.print_error(f"下载工具链时发生错误: {e}")
+            return None
+
+    def extract_toolchain(self, zip_path, target_dir):
+        """使用 zipfile 模块解压工具链到目标目录
+        
+        Args:
+            zip_path: zip 文件路径
+            target_dir: 目标目录（D:\CodeTools\Compiler）
+            
+        Returns:
+            str: 解压后的工具链目录路径，如果失败返回 None
+        """
+        try:
+            # 创建 arm-none-eabi-gcc 子目录
+            armgcc_dir = os.path.join(target_dir, 'arm-none-eabi-gcc')
+            PrintUtils.print_info(f"正在解压到: {armgcc_dir}")
+            
+            # 确保目标目录存在
+            os.makedirs(armgcc_dir, exist_ok=True)
+            
+            # 打开 zip 文件
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                # 获取所有文件列表
+                file_list = zip_ref.namelist()
+                
+                # 查找根目录（通常是第一个目录）
+                root_dir = None
+                for name in file_list:
+                    if '/' in name:
+                        root_dir = name.split('/')[0]
+                        break
+                    elif '\\' in name:
+                        root_dir = name.split('\\')[0]
+                        break
+                
+                if not root_dir:
+                    PrintUtils.print_error("无法确定压缩包的根目录")
+                    return None
+                
+                # 解压所有文件到 arm-none-eabi-gcc 目录
+                zip_ref.extractall(armgcc_dir)
+                
+                # 返回解压后的完整路径
+                extracted_path = os.path.join(armgcc_dir, root_dir)
+                PrintUtils.print_success(f"解压完成: {extracted_path}")
+                
+                return extracted_path
+                
+        except zipfile.BadZipFile:
+            PrintUtils.print_error("无效的 zip 文件")
+            return None
+        except Exception as e:
+            PrintUtils.print_error(f"解压工具链时发生错误: {e}")
+            return None
+
+    def get_bin_path(self, toolchain_dir):
+        """获取 bin 目录的完整路径
+        
+        Args:
+            toolchain_dir: 工具链根目录
+            
+        Returns:
+            str: bin 目录路径，如果不存在返回 None
+        """
+        bin_path = os.path.join(toolchain_dir, 'bin')
+        if os.path.exists(bin_path):
+            return bin_path
         return None
 
-    def check_package_installed(self, bash_path, package_name):
-        try:
-            result = subprocess.run(
-                [bash_path, '-lc', f'pacman -Q {package_name}'],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=10
-            )
-            return result.returncode == 0
-        except Exception:
-            return False
+    def check_installed(self):
+        """检查是否已安装（通过检查 bin 目录是否存在）
+        
+        Returns:
+            tuple: (是否已安装, bin目录路径)
+        """
+        # 检查安装目录下是否有 arm-none-eabi-gcc 目录
+        armgcc_dir = os.path.join(self.install_dir, 'arm-none-eabi-gcc')
+        if not os.path.exists(armgcc_dir):
+            return False, None
+        
+        # 在 arm-none-eabi-gcc 目录下查找工具链目录
+        for item in os.listdir(armgcc_dir):
+            item_path = os.path.join(armgcc_dir, item)
+            if os.path.isdir(item_path):
+                # 检查是否是工具链目录（通常包含 arm-gnu-toolchain）
+                if 'arm-gnu-toolchain' in item.lower():
+                    bin_path = self.get_bin_path(item_path)
+                    if bin_path and os.path.exists(bin_path):
+                        # 检查 bin 目录中是否有 arm-none-eabi-gcc.exe
+                        gcc_exe = os.path.join(bin_path, 'arm-none-eabi-gcc.exe')
+                        if os.path.exists(gcc_exe):
+                            return True, bin_path
+        
+        return False, None
 
-    def install_package(self, bash_path, package_name, display_name):
-        try:
-            PrintUtils.print_info(f"正在安装 {display_name}...")
-            result = subprocess.run(
-                [bash_path, '-lc', f'pacman -S {package_name} --noconfirm'],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=600
-            )
-            if result.returncode == 0:
-                PrintUtils.print_success(f"{display_name} 安装完成!")
-                return True
+    def uninstall(self, bin_path):
+        """卸载 ARM GCC：清理 PATH 并删除安装目录。"""
+        PrintUtils.print_info("开始卸载 ARM GCC 工具链...")
 
-            PrintUtils.print_error(f"{display_name} 安装失败，返回码: {result.returncode}")
-            if result.stderr:
-                for line in result.stderr.split('\n')[-5:]:
-                    if line.strip():
-                        PrintUtils.print_warning(f"  {line.strip()}")
-            return False
-        except subprocess.TimeoutExpired:
-            PrintUtils.print_error(f"{display_name} 安装超时（超过10分钟）")
-            return False
-        except Exception as e:
-            PrintUtils.print_error(f"{display_name} 安装过程中发生错误: {e}")
-            return False
+        # 1) 清理 PATH（系统优先，同时兼容用户 PATH）
+        if bin_path:
+            bin_path_abs = os.path.abspath(bin_path)
+            PrintUtils.print_info("正在从 PATH 环境变量移除:")
+            PrintUtils.print_info(f"  {bin_path_abs}")
+            EnvUtils.remove_from_path_environment([bin_path_abs], prefer_system=True)
 
-    def add_arm_gcc_path(self, msys2_path):
-        mingw_bin = os.path.join(msys2_path, 'mingw64', 'bin')
-        gcc_exe = os.path.join(mingw_bin, 'arm-none-eabi-gcc.exe')
-        if not os.path.exists(gcc_exe):
-            PrintUtils.print_warning("未在 mingw64/bin 中检测到 arm-none-eabi-gcc.exe，跳过 PATH 配置")
-            return False
-        if EnvUtils.add_to_system_path([mingw_bin], skip_if_not_admin=True):
-            PrintUtils.print_success(f"已添加到 PATH: {mingw_bin}")
-            return True
-        PrintUtils.print_warning("添加 PATH 失败，请手动添加")
-        return False
+        # 2) 删除安装目录
+        armgcc_dir = os.path.join(self.install_dir, 'arm-none-eabi-gcc')
+        if os.path.exists(armgcc_dir):
+            try:
+                shutil.rmtree(armgcc_dir, ignore_errors=False)
+                PrintUtils.print_success(f"已删除安装目录: {armgcc_dir}")
+            except Exception as e:
+                PrintUtils.print_error(f"删除安装目录失败: {e}")
+                PrintUtils.print_warning("你可以稍后手动删除该目录（可能被占用）")
+                return False
+        else:
+            PrintUtils.print_info("未找到安装目录，无需删除文件")
+
+        PrintUtils.print_success("ARM GCC 卸载完成!")
+        return True
 
     def run(self):
+        """运行安装流程"""
         PrintUtils.print_info("=" * 60)
         PrintUtils.print_info("ARM GCC 工具链一键安装工具")
-        PrintUtils.print_info("通过 MSYS2 的 pacman 包管理器安装 ARM GCC")
+        PrintUtils.print_info("安装 Arm GNU Embedded Toolchain (arm-none-eabi-gcc)")
         PrintUtils.print_info("=" * 60)
+        PrintUtils.print_info("")
 
-        msys2_path = self.get_msys2_path()
-        if not msys2_path:
-            PrintUtils.print_error("未检测到 MSYS2 安装")
-            PrintUtils.print_info("请先使用工具 1 安装 MSYS2，然后再运行此工具")
-            return
-
-        PrintUtils.print_success(f"检测到 MSYS2 已安装在: {msys2_path}")
-        bash_path = os.path.join(msys2_path, 'usr', 'bin', 'bash.exe')
-        if not os.path.exists(bash_path):
-            PrintUtils.print_error(f"未找到 bash.exe，路径: {bash_path}")
-            return
-
-        if self.check_package_installed(bash_path, self.package_name):
-            PrintUtils.print_success(f"检测到 {self.package_display_name} 已安装")
-            choice = input("是否重新安装？[y/N]: ").strip().lower()
-            if choice not in ['y', 'yes']:
-                add_path = input("是否将 MSYS2 mingw64\\bin 添加到 PATH？[Y/n]: ").strip().lower()
-                if add_path not in ['n', 'no']:
-                    self.add_arm_gcc_path(msys2_path)
+        # 检查是否已安装
+        is_installed, bin_path = self.check_installed()
+        if is_installed:
+            PrintUtils.print_success(f"检测到 ARM GCC 工具链已安装在: {bin_path}")
+            PrintUtils.print_info("")
+            PrintUtils.print_info("请选择操作:")
+            PrintUtils.print_info("  1. 重新安装")
+            PrintUtils.print_info("  2. 卸载（清理 PATH + 删除安装目录）")
+            PrintUtils.print_info("  3. 退出")
+            op = input("请选择 [1/2/3]: ").strip()
+            if op == '2':
+                # 二次确认
+                PrintUtils.print_warning("警告: 将清理 PATH 并删除工具链文件")
+                confirm = input("确定要卸载吗？[y/N]: ").strip().lower()
+                if confirm in ['y', 'yes']:
+                    self.uninstall(bin_path)
+                else:
+                    PrintUtils.print_info("取消卸载")
                 return
+            elif op == '3' or op == '0':
+                PrintUtils.print_info("退出")
+                return
+            else:
+                # 1 或其他输入，继续走重新安装流程
+                pass
 
-        if not self.install_package(bash_path, self.package_name, self.package_display_name):
-            PrintUtils.print_error("=" * 60)
-            PrintUtils.print_error("安装失败")
-            PrintUtils.print_error("=" * 60)
+        # 获取最新版本
+        version = self.get_latest_version_from_github()
+        if not version:
+            PrintUtils.print_warning(f"无法从 GitHub 获取版本，使用后备版本: {self.fallback_version}")
+            version = self.fallback_version
+        else:
+            PrintUtils.print_success(f"将安装版本: {version}")
+
+        PrintUtils.print_info("")
+
+        # 下载工具链
+        PrintUtils.print_info("开始下载工具链...")
+        zip_path = self.download_toolchain(version, self.install_dir)
+        if not zip_path:
+            PrintUtils.print_error("下载失败")
             return
 
-        self.add_arm_gcc_path(msys2_path)
+        PrintUtils.print_info("")
+
+        # 解压工具链
+        PrintUtils.print_info("开始解压工具链...")
+        toolchain_dir = self.extract_toolchain(zip_path, self.install_dir)
+        if not toolchain_dir:
+            PrintUtils.print_error("解压失败")
+            # 清理下载的文件
+            try:
+                if os.path.exists(zip_path):
+                    os.remove(zip_path)
+            except:
+                pass
+            return
+
+        # 获取 bin 目录路径（直接使用 arm-none-eabi-gcc\bin）
+        armgcc_dir = os.path.join(self.install_dir, 'arm-none-eabi-gcc')
+        bin_path = os.path.join(armgcc_dir, 'bin')
+        
+        # 验证 bin 目录是否存在
+        if not os.path.exists(bin_path):
+            PrintUtils.print_error(f"未找到 bin 目录: {bin_path}")
+            return
+
+        PrintUtils.print_info("")
+
+        # 添加到环境变量（只添加这一个路径）
+        bin_path_abs = os.path.abspath(bin_path)
+        PrintUtils.print_info(f"正在添加以下路径到系统 PATH 环境变量:")
+        PrintUtils.print_info(f"  {bin_path_abs}")
+        if EnvUtils.add_to_system_path([bin_path_abs], skip_if_not_admin=True):
+            PrintUtils.print_success("已添加到 PATH 环境变量")
+        else:
+            PrintUtils.print_warning("添加到 PATH 环境变量失败，请手动添加")
+            PrintUtils.print_info(f"请手动将以下路径添加到 PATH: {bin_path}")
+
+        PrintUtils.print_info("")
+
+        # 清理临时文件
+        try:
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+                PrintUtils.print_info("已清理临时文件")
+        except:
+            pass
+
+        # 安装完成
         PrintUtils.print_success("=" * 60)
         PrintUtils.print_success("安装完成!")
-        PrintUtils.print_info("验证命令: arm-none-eabi-gcc --version")
+        PrintUtils.print_info("")
+        PrintUtils.print_info("使用说明:")
+        PrintUtils.print_info("  1. 请重新打开命令行窗口以使环境变量生效")
+        PrintUtils.print_info("  2. 运行以下命令验证安装:")
+        PrintUtils.print_info("     arm-none-eabi-gcc --version")
+        PrintUtils.print_info("")
+        PrintUtils.print_info(f"安装路径: {toolchain_dir}")
+        PrintUtils.print_info(f"Bin 目录: {bin_path}")
         PrintUtils.print_success("=" * 60)
 
