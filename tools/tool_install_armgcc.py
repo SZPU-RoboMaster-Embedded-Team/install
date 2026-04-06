@@ -7,6 +7,7 @@ import sys
 import json
 import re
 import zipfile
+import shutil
 import urllib.request
 import urllib.error
 
@@ -233,6 +234,33 @@ class Tool(BaseTool):
         
         return False, None
 
+    def uninstall(self, bin_path):
+        """卸载 ARM GCC：清理 PATH 并删除安装目录。"""
+        PrintUtils.print_info("开始卸载 ARM GCC 工具链...")
+
+        # 1) 清理 PATH（系统优先，同时兼容用户 PATH）
+        if bin_path:
+            bin_path_abs = os.path.abspath(bin_path)
+            PrintUtils.print_info("正在从 PATH 环境变量移除:")
+            PrintUtils.print_info(f"  {bin_path_abs}")
+            EnvUtils.remove_from_path_environment([bin_path_abs], prefer_system=True)
+
+        # 2) 删除安装目录
+        armgcc_dir = os.path.join(self.install_dir, 'arm-none-eabi-gcc')
+        if os.path.exists(armgcc_dir):
+            try:
+                shutil.rmtree(armgcc_dir, ignore_errors=False)
+                PrintUtils.print_success(f"已删除安装目录: {armgcc_dir}")
+            except Exception as e:
+                PrintUtils.print_error(f"删除安装目录失败: {e}")
+                PrintUtils.print_warning("你可以稍后手动删除该目录（可能被占用）")
+                return False
+        else:
+            PrintUtils.print_info("未找到安装目录，无需删除文件")
+
+        PrintUtils.print_success("ARM GCC 卸载完成!")
+        return True
+
     def run(self):
         """运行安装流程"""
         PrintUtils.print_info("=" * 60)
@@ -246,10 +274,26 @@ class Tool(BaseTool):
         if is_installed:
             PrintUtils.print_success(f"检测到 ARM GCC 工具链已安装在: {bin_path}")
             PrintUtils.print_info("")
-            choice = input("是否重新安装？[y/N]: ").strip().lower()
-            if choice not in ['y', 'yes']:
-                PrintUtils.print_info("取消安装")
+            PrintUtils.print_info("请选择操作:")
+            PrintUtils.print_info("  1. 重新安装")
+            PrintUtils.print_info("  2. 卸载（清理 PATH + 删除安装目录）")
+            PrintUtils.print_info("  3. 退出")
+            op = input("请选择 [1/2/3]: ").strip()
+            if op == '2':
+                # 二次确认
+                PrintUtils.print_warning("警告: 将清理 PATH 并删除工具链文件")
+                confirm = input("确定要卸载吗？[y/N]: ").strip().lower()
+                if confirm in ['y', 'yes']:
+                    self.uninstall(bin_path)
+                else:
+                    PrintUtils.print_info("取消卸载")
                 return
+            elif op == '3' or op == '0':
+                PrintUtils.print_info("退出")
+                return
+            else:
+                # 1 或其他输入，继续走重新安装流程
+                pass
 
         # 获取最新版本
         version = self.get_latest_version_from_github()

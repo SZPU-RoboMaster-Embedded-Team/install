@@ -4,8 +4,14 @@ import sys
 import time
 import subprocess
 import platform
+import re
+import threading
+import socket
+import ssl
 import urllib.request
 import urllib.error
+import shutil
+import tempfile
 
 # 启用 Windows 控制台颜色支持
 if platform.system() == 'Windows':
@@ -16,15 +22,71 @@ if platform.system() == 'Windows':
     except:
         pass
 
+def _ensure_persistent_config():
+    """确保 config.py 从可持久化位置加载（避免 EXE onefile 写入 _MEI 临时目录丢失）。"""
+    # 源码运行：默认从项目根目录读取
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+
+    if platform.system() != "Windows":
+        return
+
+    # EXE/Windows：优先使用 LOCALAPPDATA\fishros_install\config.py
+    try:
+        local_appdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        if not local_appdata:
+            return
+
+        cfg_dir = os.path.join(local_appdata, "fishros_install")
+        cfg_path = os.path.join(cfg_dir, "config.py")
+        os.makedirs(cfg_dir, exist_ok=True)
+
+        # 不存在就创建：优先拷贝打包内置的 config.py；否则拷贝项目根目录的 config.py；再否则生成最小模板
+        if not os.path.exists(cfg_path):
+            bundled = None
+            if getattr(sys, "frozen", False):
+                meipass = getattr(sys, "_MEIPASS", None)
+                if meipass:
+                    candidate = os.path.join(meipass, "config.py")
+                    if os.path.exists(candidate):
+                        bundled = candidate
+
+            root_cfg = os.path.join(project_root, "config.py")
+            if bundled and os.path.exists(bundled):
+                shutil.copyfile(bundled, cfg_path)
+            elif os.path.exists(root_cfg):
+                shutil.copyfile(root_cfg, cfg_path)
+            else:
+                FileUtils.write(
+                    cfg_path,
+                    "# -*- coding: utf-8 -*-\n"
+                    "WINGET_INSTALL_PATH = r'D:\\\\CodeTools'\n"
+                    "MSYS2_PATHS = [r'D:\\\\CodeTools\\\\msys64', r'D:\\\\CodeTools', r'C:\\\\msys64', r'C:\\\\msys32']\n"
+                    "ARM_GCC_INSTALL_DIR = r'D:\\\\CodeTools\\\\Compiler'\n"
+                )
+
+        if cfg_dir not in sys.path:
+            sys.path.insert(0, cfg_dir)
+    except Exception:
+        return
+
+
 # 导入配置
+_ensure_persistent_config()
 try:
-    # 尝试从父目录导入配置
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     import config
-    WINGET_INSTALL_PATH = config.WINGET_INSTALL_PATH
-except:
+    WINGET_INSTALL_PATH = getattr(config, "WINGET_INSTALL_PATH", r"D:\CodeTools")
+except Exception:
     # 如果配置文件不存在，使用默认值
-    WINGET_INSTALL_PATH = r'D:\wingetApp'
+    WINGET_INSTALL_PATH = r'D:\CodeTools'
+
+# 如果配置里的默认目录不存在，自动回退到 D:\CodeTools（按用户期望）
+try:
+    if not WINGET_INSTALL_PATH or not os.path.isdir(WINGET_INSTALL_PATH):
+        WINGET_INSTALL_PATH = r"D:\CodeTools"
+except Exception:
+    WINGET_INSTALL_PATH = r"D:\CodeTools"
 
 
 # Windows 平台检测
@@ -174,6 +236,107 @@ class WingetUtils:
     DEFAULT_INSTALL_PATH = WINGET_INSTALL_PATH
 
     @staticmethod
+    def _get_network_status_brief(timeout_sec=3):
+        """获取简短网络状态，用于长时间无输出时的用户反馈（Windows/通用）。
+
+        Returns:
+            str: 状态字符串（尽量短）
+        """
+        host = "www.msftconnecttest.com"
+        http_url = "http://www.msftconnecttest.com/connecttest.txt"
+        https_url = "https://www.msftconnecttest.com/connecttest.txt"
+
+        dns_ok = False
+        http_ok = False
+        https_ok = False
+        dns_err = ""
+        http_err = ""
+        https_err = ""
+        http_ms = None
+        https_ms = None
+
+        try:
+            socket.gethostbyname(host)
+            dns_ok = True
+        except Exception as e:
+            dns_err = str(e)
+
+        # 先用 HTTP 探测连通性，避免 HTTPS 证书问题造成“误报无网”
+        if dns_ok:
+            try:
+                start = time.time()
+                req = urllib.request.Request(http_url, method="GET")
+                with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                    _ = resp.read(64)  # 读少量即可确认连通
+                http_ms = int((time.time() - start) * 1000)
+                http_ok = True
+            except Exception as e:
+                http_err = str(e)
+
+        # 再尝试 HTTPS（如果证书校验失败，提示“可能被代理/证书异常”，但不把它当成断网）
+        if dns_ok:
+            try:
+                start = time.time()
+                req = urllib.request.Request(https_url, method="GET")
+                ctx = ssl.create_default_context()
+                with urllib.request.urlopen(req, timeout=timeout_sec, context=ctx) as resp:
+                    _ = resp.read(64)
+                https_ms = int((time.time() - start) * 1000)
+                https_ok = True
+            except Exception as e:
+                https_err = str(e)
+
+        parts = []
+        if dns_ok:
+            parts.append("DNS: ok")
+        else:
+            parts.append(f"DNS: fail ({dns_err})" if dns_err else "DNS: fail")
+
+        if http_ok:
+            parts.append(f"HTTP: ok ({http_ms}ms)" if http_ms is not None else "HTTP: ok")
+        else:
+            if not dns_ok:
+                parts.append("HTTP: skip")
+            else:
+                parts.append(f"HTTP: fail ({http_err})" if http_err else "HTTP: fail")
+
+        if https_ok:
+            parts.append(f"HTTPS: ok ({https_ms}ms)" if https_ms is not None else "HTTPS: ok")
+        else:
+            if not dns_ok:
+                parts.append("HTTPS: skip")
+            else:
+                # 常见：被代理/安全软件拦截导致证书校验失败
+                lower = (https_err or "").lower()
+                if "certificate_verify_failed" in lower or "hostname mismatch" in lower:
+                    parts.append("HTTPS: cert issue (可能被代理/证书异常)")
+                else:
+                    parts.append(f"HTTPS: fail ({https_err})" if https_err else "HTTPS: fail")
+
+        return ", ".join(parts)
+
+    @staticmethod
+    def _start_network_status_thread(stop_event, interval_sec=10):
+        """后台周期打印网络状态，直到 stop_event 被 set()."""
+        def _worker():
+            # 立即打印一次，给用户“正在进行”的反馈
+            try:
+                PrintUtils.print_info(f"网络状态: {WingetUtils._get_network_status_brief()}")
+            except Exception:
+                # 任何异常都不影响主流程
+                pass
+
+            while not stop_event.wait(interval_sec):
+                try:
+                    PrintUtils.print_info(f"网络状态: {WingetUtils._get_network_status_brief()}")
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        return t
+
+    @staticmethod
     def check_winget():
         """检查 winget 是否可用"""
         try:
@@ -232,7 +395,81 @@ class WingetUtils:
             cmd += f' --location "{install_location}"'
             PrintUtils.print_info(f"安装路径: {install_location}")
 
-        return CmdTask(cmd).run()
+        PrintUtils.print_info("即将执行 winget 安装命令")
+        PrintUtils.print_info(f"命令: {cmd}")
+        PrintUtils.print_info("执行后可能短时间无输出，这是下载或安装程序初始化的正常现象")
+
+        try:
+            PrintUtils.print_info("正在启动 winget 安装进程...")
+            # winget 安装阶段经常长时间无输出，这里周期性展示网络状态，缓解用户焦虑
+            stop_event = threading.Event()
+            net_thread = WingetUtils._start_network_status_thread(stop_event, interval_sec=10)
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=False
+            )
+            stop_event.set()
+            try:
+                net_thread.join(timeout=1)
+            except Exception:
+                pass
+            PrintUtils.print_info(f"winget 安装进程结束，返回码: {result.returncode}")
+
+            def _decode_output(raw_bytes):
+                if not raw_bytes:
+                    return ""
+                for encoding in ['utf-8', 'gbk', 'gb2312', 'cp936', 'latin-1']:
+                    try:
+                        return raw_bytes.decode(encoding, errors='replace')
+                    except Exception:
+                        continue
+                return raw_bytes.decode('utf-8', errors='replace')
+
+            stdout_text = _decode_output(result.stdout)
+            stderr_text = _decode_output(result.stderr)
+
+            if stdout_text.strip():
+                print(stdout_text, end="" if stdout_text.endswith("\n") else "\n")
+            if stderr_text.strip():
+                print(stderr_text, end="" if stderr_text.endswith("\n") else "\n")
+
+            if result.returncode == 0:
+                PrintUtils.print_success(f"{package_id} 安装命令执行成功")
+                return True
+
+            # winget 已安装且无可升级版本时可能返回非 0，按成功处理
+            combined = f"{stdout_text}\n{stderr_text}".lower()
+            no_upgrade_markers = [
+                "找到已安装的现有包",
+                "找不到可用的升级",
+                "没有可用的较新的包版本",
+                "already installed",
+                "no available upgrade",
+                "no applicable upgrade found",
+            ]
+            if any(marker in combined for marker in no_upgrade_markers):
+                installed_versions = WingetUtils.list_installed_versions(package_id)
+                if installed_versions:
+                    PrintUtils.print_info(
+                        f"{package_id} 已安装（无可升级版本），将继续后续流程"
+                    )
+                    return True
+
+            PrintUtils.print_error(f"winget install 返回非 0: {result.returncode}")
+            PrintUtils.print_warning("可能原因: 网络连接异常、源访问失败、安装器权限限制或包状态异常")
+            PrintUtils.print_warning("建议: 执行 `winget source list` 和 `winget list --id MSYS2.MSYS2` 排查")
+            PrintUtils.print_warning("建议: 若持续失败，可切换为手动下载安装流程")
+            return False
+        except Exception as e:
+            try:
+                stop_event.set()
+            except Exception:
+                pass
+            PrintUtils.print_error(f"执行 winget install 失败: {e}")
+            PrintUtils.print_warning("建议: 先确认 winget 可用，再检查系统策略或安全软件是否拦截")
+            return False
 
     @staticmethod
     def search(keyword):
@@ -370,6 +607,269 @@ class EnvUtils:
     """环境变量配置工具（通用工具类）"""
 
     @staticmethod
+    def _normalize_path_for_compare(p):
+        """用于 PATH 条目对比的规范化（Windows 大小写不敏感）。"""
+        if p is None:
+            return ""
+        try:
+            # 不强制要求存在；卸载时目录可能已被删除，但仍需从 PATH 移除
+            p2 = os.path.expandvars(str(p).strip().strip('"').strip("'"))
+            p2 = os.path.abspath(os.path.normpath(p2))
+            if is_windows:
+                p2 = os.path.normcase(p2)
+            return p2
+        except Exception:
+            return str(p).strip()
+
+    @staticmethod
+    def _dedupe_keep_order(items):
+        seen = set()
+        out = []
+        for x in items:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        return out
+
+    @staticmethod
+    def _split_path_value(path_value):
+        if not path_value:
+            return []
+        return [p.strip() for p in str(path_value).split(os.pathsep) if p and p.strip()]
+
+    @staticmethod
+    def _join_path_value(path_list):
+        # 过滤空串并去重（保持顺序）
+        cleaned = [p.strip() for p in path_list if p and str(p).strip()]
+        cleaned = EnvUtils._dedupe_keep_order(cleaned)
+        return os.pathsep.join(cleaned)
+
+    @staticmethod
+    def get_system_path():
+        """读取系统 PATH（HKLM）。返回 (path_str, reg_type)；失败返回 ("", None)。"""
+        if not is_windows:
+            return "", None
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0,
+                winreg.KEY_READ
+            )
+            try:
+                v, t = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                v, t = "", None
+            winreg.CloseKey(key)
+            return v or "", t
+        except Exception:
+            return "", None
+
+    @staticmethod
+    def get_user_path():
+        """读取用户 PATH（HKCU）。返回 (path_str, reg_type)；失败返回 ("", None)。"""
+        if not is_windows:
+            return "", None
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                "Environment",
+                0,
+                winreg.KEY_READ
+            )
+            try:
+                v, t = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                v, t = "", None
+            winreg.CloseKey(key)
+            return v or "", t
+        except Exception:
+            return "", None
+
+    @staticmethod
+    def delete_system_env_var(name):
+        """删除系统级环境变量（HKLM）。不存在则视为成功。"""
+        if not is_windows:
+            PrintUtils.print_warning("环境变量配置仅支持 Windows 平台")
+            return False
+        if not check_admin():
+            PrintUtils.print_error("需要管理员权限来修改系统环境变量")
+            return False
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0,
+                winreg.KEY_ALL_ACCESS
+            )
+            try:
+                winreg.DeleteValue(key, name)
+                PrintUtils.print_success(f"已删除系统环境变量: {name}")
+            except FileNotFoundError:
+                # 不存在也算成功
+                PrintUtils.print_info(f"系统环境变量不存在，无需删除: {name}")
+            finally:
+                winreg.CloseKey(key)
+            EnvUtils._broadcast_environment_change()
+            PrintUtils.print_warning("请重新打开命令行窗口以使环境变量生效")
+            return True
+        except Exception as e:
+            PrintUtils.print_error(f"删除系统环境变量失败: {e}")
+            return False
+
+    @staticmethod
+    def remove_from_system_path(paths, skip_if_not_admin=True):
+        """从系统 PATH 中移除指定路径条目（精确匹配规范化后的路径）。"""
+        if not is_windows:
+            PrintUtils.print_warning("环境变量配置仅支持 Windows 平台")
+            return False
+
+        if not check_admin():
+            if skip_if_not_admin:
+                PrintUtils.print_warning("需要管理员权限来修改系统环境变量")
+                PrintUtils.print_info("将尝试从用户 PATH 中移除")
+                return EnvUtils.remove_from_user_path(paths)
+            PrintUtils.print_error("需要管理员权限")
+            return False
+
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0,
+                winreg.KEY_ALL_ACCESS
+            )
+            try:
+                current_path, reg_type = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                current_path, reg_type = "", winreg.REG_EXPAND_SZ
+
+            path_list = EnvUtils._split_path_value(current_path)
+            if not path_list:
+                winreg.CloseKey(key)
+                PrintUtils.print_info("系统 PATH 为空，无需移除")
+                return True
+
+            target_norms = set(EnvUtils._normalize_path_for_compare(p) for p in (paths or []))
+            removed = []
+            kept = []
+            for p in path_list:
+                if EnvUtils._normalize_path_for_compare(p) in target_norms:
+                    removed.append(p)
+                else:
+                    kept.append(p)
+
+            new_path = EnvUtils._join_path_value(kept)
+            # 始终写回（即便 removed 为空也可做去重/清理，但这里保持稳妥仅在变化时写）
+            if removed or new_path != EnvUtils._join_path_value(path_list):
+                winreg.SetValueEx(
+                    key,
+                    "Path",
+                    0,
+                    reg_type if reg_type is not None else winreg.REG_EXPAND_SZ,
+                    new_path
+                )
+                EnvUtils._broadcast_environment_change()
+
+            winreg.CloseKey(key)
+
+            if removed:
+                PrintUtils.print_success("已从系统 PATH 移除以下路径:")
+                for p in removed:
+                    PrintUtils.print_info(f"  - {p}")
+                PrintUtils.print_warning("请重新打开命令行窗口以使环境变量生效")
+            else:
+                PrintUtils.print_info("系统 PATH 中未找到需要移除的路径")
+            return True
+        except Exception as e:
+            PrintUtils.print_error(f"修改系统环境变量失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    @staticmethod
+    def remove_from_user_path(paths):
+        """从用户 PATH 中移除指定路径条目（精确匹配规范化后的路径）。"""
+        if not is_windows:
+            PrintUtils.print_warning("环境变量配置仅支持 Windows 平台")
+            return False
+
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                "Environment",
+                0,
+                winreg.KEY_ALL_ACCESS
+            )
+            try:
+                current_path, reg_type = winreg.QueryValueEx(key, "Path")
+            except FileNotFoundError:
+                current_path, reg_type = "", winreg.REG_EXPAND_SZ
+
+            path_list = EnvUtils._split_path_value(current_path)
+            if not path_list:
+                winreg.CloseKey(key)
+                PrintUtils.print_info("用户 PATH 为空，无需移除")
+                return True
+
+            target_norms = set(EnvUtils._normalize_path_for_compare(p) for p in (paths or []))
+            removed = []
+            kept = []
+            for p in path_list:
+                if EnvUtils._normalize_path_for_compare(p) in target_norms:
+                    removed.append(p)
+                else:
+                    kept.append(p)
+
+            new_path = EnvUtils._join_path_value(kept)
+            if removed or new_path != EnvUtils._join_path_value(path_list):
+                winreg.SetValueEx(
+                    key,
+                    "Path",
+                    0,
+                    reg_type if reg_type is not None else winreg.REG_EXPAND_SZ,
+                    new_path
+                )
+                EnvUtils._broadcast_environment_change()
+
+            winreg.CloseKey(key)
+
+            if removed:
+                PrintUtils.print_success("已从用户 PATH 移除以下路径:")
+                for p in removed:
+                    PrintUtils.print_info(f"  - {p}")
+                PrintUtils.print_warning("请重新打开命令行窗口以使环境变量生效")
+            else:
+                PrintUtils.print_info("用户 PATH 中未找到需要移除的路径")
+            return True
+        except Exception as e:
+            PrintUtils.print_error(f"修改用户环境变量失败: {e}")
+            return False
+
+    @staticmethod
+    def remove_from_path_environment(paths, prefer_system=True):
+        """通用卸载入口：优先移除系统 PATH；同时也尝试移除用户 PATH（兼容历史写入）。"""
+        if not paths:
+            PrintUtils.print_warning("路径列表为空")
+            return False
+
+        ok = True
+        if prefer_system:
+            ok = EnvUtils.remove_from_system_path(paths, skip_if_not_admin=True) and ok
+            # 兼容：可能之前写入到了用户 PATH
+            ok = EnvUtils.remove_from_user_path(paths) and ok
+        else:
+            ok = EnvUtils.remove_from_user_path(paths) and ok
+            # 兼容：可能之前写入到了系统 PATH
+            ok = EnvUtils.remove_from_system_path(paths, skip_if_not_admin=True) and ok
+        return ok
+
+    @staticmethod
     def _broadcast_environment_change():
         """广播环境变量更改消息（带超时，避免 SendMessageW 广播卡死）"""
         if not is_windows:
@@ -393,6 +893,36 @@ class EnvUtils:
         except Exception:
             # 广播失败不影响 PATH 写入生效（新开的终端仍会读取到注册表）
             pass
+    
+    @staticmethod
+    def set_system_env_var(name, value):
+        """设置系统级环境变量 NAME=VALUE
+        """
+        if not is_windows:
+            PrintUtils.print_warning("环境变量配置仅支持 Windows 平台")
+            return False
+        
+        if not check_admin():
+            PrintUtils.print_error("需要管理员权限来修改系统环境变量")
+            return False
+        
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                0,
+                winreg.KEY_ALL_ACCESS
+            )
+            winreg.SetValueEx(key, name, 0, winreg.REG_EXPAND_SZ, str(value))
+            winreg.CloseKey(key)
+            EnvUtils._broadcast_environment_change()
+            PrintUtils.print_success(f"已设置系统环境变量: {name}={value}")
+            PrintUtils.print_warning("请重新打开命令行窗口以使环境变量生效")
+            return True
+        except Exception as e:
+            PrintUtils.print_error(f"设置系统环境变量失败: {e}")
+            return False
     
     @staticmethod
     def add_to_system_path(paths, skip_if_not_admin=True):
@@ -538,7 +1068,7 @@ class EnvUtils:
     
     @staticmethod
     def configure_path_environment(paths, skip_if_not_admin=True):
-        """配置PATH环境变量（通用方法）
+        """配置 PATH 环境变量（通用方法）
         
         Args:
             paths: 需要添加的路径列表（字符串列表）
@@ -546,6 +1076,9 @@ class EnvUtils:
             
         Returns:
             bool: 是否成功
+
+        Notes:
+            - 安装写入 PATH 使用本方法；卸载请使用 `remove_from_path_environment()` 做对称清理。
         """
         if not paths:
             PrintUtils.print_warning("路径列表为空")
@@ -626,6 +1159,127 @@ class ChooseWithCategoriesTask:
             except KeyboardInterrupt:
                 print("\n\n用户取消操作")
                 return 0, None
+
+
+class ConfigUtils:
+    """配置文件工具类"""
+
+    @staticmethod
+    def _to_raw_string(path):
+        """将路径安全转换为 Python 原始字符串字面量内容"""
+        return path.replace("\\", "\\\\").replace("'", "\\'")
+
+    @staticmethod
+    def persist_install_base_path(base_path, config_file=None):
+        """持久化安装根目录并刷新运行时配置"""
+        if not base_path:
+            PrintUtils.print_error("安装路径不能为空")
+            return False
+
+        normalized = os.path.abspath(os.path.expanduser(base_path.strip().strip('"').strip("'")))
+        # EXE(onefile) 下：写入 %LOCALAPPDATA%\\fishros_install\\config.py，确保可持久化
+        config_path = None
+        if config_file:
+            config_path = config_file
+        else:
+            local_appdata = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+            if is_windows and local_appdata:
+                cfg_dir = os.path.join(local_appdata, "fishros_install")
+                config_path = os.path.join(cfg_dir, "config.py")
+                try:
+                    os.makedirs(cfg_dir, exist_ok=True)
+                except Exception:
+                    pass
+            if not config_path:
+                config_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "config.py"
+                )
+
+        # 若目标 config 不存在：尝试从内置/项目模板拷贝一份再写入
+        if not os.path.exists(config_path):
+            try:
+                project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                root_cfg = os.path.join(project_root, "config.py")
+                bundled = None
+                if getattr(sys, "frozen", False):
+                    meipass = getattr(sys, "_MEIPASS", None)
+                    if meipass:
+                        candidate = os.path.join(meipass, "config.py")
+                        if os.path.exists(candidate):
+                            bundled = candidate
+
+                if bundled:
+                    shutil.copyfile(bundled, config_path)
+                elif os.path.exists(root_cfg):
+                    shutil.copyfile(root_cfg, config_path)
+                else:
+                    # 最小模板兜底
+                    FileUtils.write(
+                        config_path,
+                        "# -*- coding: utf-8 -*-\n"
+                        "WINGET_INSTALL_PATH = r'D:\\\\CodeTools'\n"
+                        "MSYS2_PATHS = [r'D:\\\\CodeTools\\\\msys64', r'D:\\\\CodeTools', r'C:\\\\msys64', r'C:\\\\msys32']\n"
+                        "ARM_GCC_INSTALL_DIR = r'D:\\\\CodeTools\\\\Compiler'\n"
+                    )
+            except Exception as e:
+                PrintUtils.print_error(f"创建配置文件失败: {e}")
+                return False
+
+        msys2_path = os.path.join(normalized, "msys64")
+        arm_gcc_path = os.path.join(normalized, "Compiler")
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            base_raw = ConfigUtils._to_raw_string(normalized)
+            msys2_raw = ConfigUtils._to_raw_string(msys2_path)
+            arm_raw = ConfigUtils._to_raw_string(arm_gcc_path)
+
+            content = re.sub(
+                r"WINGET_INSTALL_PATH\s*=\s*r'[^']*'",
+                lambda _: f"WINGET_INSTALL_PATH = r'{base_raw}'",
+                content,
+                count=1
+            )
+            content = re.sub(
+                r"MSYS2_PATHS\s*=\s*\[[\s\S]*?\]",
+                lambda _: (
+                    "MSYS2_PATHS = [\n"
+                    f"    r'{msys2_raw}',  # 期望的安装路径\n"
+                    f"    r'{base_raw}',  # 兼容已安装在此路径的情况\n"
+                    "    r'C:\\msys64',\n"
+                    "    r'C:\\msys32',\n"
+                    "]"
+                ),
+                content,
+                count=1
+            )
+            content = re.sub(
+                r"ARM_GCC_INSTALL_DIR\s*=\s*r'[^']*'",
+                lambda _: f"ARM_GCC_INSTALL_DIR = r'{arm_raw}'",
+                content,
+                count=1
+            )
+
+            with open(config_path, "w", encoding="utf-8") as f:
+                f.write(content)
+        except Exception as e:
+            PrintUtils.print_error(f"写入配置文件失败: {e}")
+            return False
+
+        # 同步当前进程中的配置模块，确保本次运行立即生效
+        config_module = sys.modules.get("config")
+        if config_module:
+            config_module.WINGET_INSTALL_PATH = normalized
+            config_module.MSYS2_PATHS = [msys2_path, normalized, r"C:\msys64", r"C:\msys32"]
+            config_module.ARM_GCC_INSTALL_DIR = arm_gcc_path
+
+        global WINGET_INSTALL_PATH
+        WINGET_INSTALL_PATH = normalized
+        WingetUtils.DEFAULT_INSTALL_PATH = normalized
+        return True
 
 
 class BaseTool:

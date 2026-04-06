@@ -128,6 +128,7 @@ class Tool(BaseTool):
     def install_msys2_with_winget(self):
         """使用 winget 安装 MSYS2"""
         PrintUtils.print_info("开始使用 winget 安装 MSYS2...")
+        PrintUtils.print_info("阶段 1/4: 准备安装参数与下载位置信息")
 
         # MSYS2 的 winget 包 ID
         package_id = "MSYS2.MSYS2"
@@ -142,6 +143,7 @@ class Tool(BaseTool):
         PrintUtils.print_info(f"  - Winget 缓存目录: {winget_download_path}")
         PrintUtils.print_info(f"  - 系统临时目录: {temp_path}")
         PrintUtils.print_info(f"  (安装程序下载后会自动运行，通常不会保留在临时目录)")
+        PrintUtils.print_info("提示: 此阶段完成后会进入下载与安装，可能持续几分钟")
 
         # 获取 MSYS2 的期望安装路径（从配置文件读取第一个路径）
         msys2_install_path = None
@@ -156,19 +158,30 @@ class Tool(BaseTool):
         # 使用指定的 MSYS2 安装路径
         if msys2_install_path:
             PrintUtils.print_info(f"尝试将 MSYS2 安装到: {msys2_install_path}")
+            PrintUtils.print_info("阶段 2/4: 启动 winget 安装任务")
+            PrintUtils.print_info("如果弹出 UAC/安装确认窗口，请点击允许或继续")
+            PrintUtils.print_info("安装进行中请勿关闭当前窗口，长时间无输出通常是下载或解压中")
             success = WingetUtils.install(package_id, custom_location=msys2_install_path)
         else:
             # 如果无法获取路径，使用默认行为
+            PrintUtils.print_info("阶段 2/4: 启动 winget 安装任务（默认安装路径）")
+            PrintUtils.print_info("如果弹出 UAC/安装确认窗口，请点击允许或继续")
+            PrintUtils.print_info("安装进行中请勿关闭当前窗口，长时间无输出通常是下载或解压中")
             success = WingetUtils.install(package_id, use_default_location=True)
 
         if success:
+            PrintUtils.print_info("阶段 3/4: winget 安装任务执行完成，正在校验结果")
             PrintUtils.print_success("MSYS2 安装成功!")
             if msys2_install_path:
                 PrintUtils.print_info(f"MSYS2 安装路径: {msys2_install_path}")
-
+            PrintUtils.print_info("阶段 4/4: 安装流程收尾完成，将进入后续配置")
             return True
         else:
+            PrintUtils.print_info("阶段 3/4: winget 返回失败，正在输出排查建议")
             PrintUtils.print_error("MSYS2 安装失败")
+            PrintUtils.print_warning("建议: 先执行 `winget --version` 确认 winget 可用")
+            PrintUtils.print_warning("建议: 检查网络与 Microsoft Store 服务后重试")
+            PrintUtils.print_warning("建议: 如多次失败，可返回菜单选择“手动下载安装”")
             return False
 
     def uninstall_msys2_with_winget(self):
@@ -177,6 +190,21 @@ class Tool(BaseTool):
 
         # MSYS2 的 winget 包 ID
         package_id = "MSYS2.MSYS2"
+
+        # 卸载前先记录安装路径，用于卸载后清理 PATH（卸载后目录可能不存在）
+        msys2_base_path_before = None
+        try:
+            msys2_base_path_before = self.get_msys2_path()
+        except Exception:
+            msys2_base_path_before = None
+        if not msys2_base_path_before:
+            # fallback：优先用配置里的期望路径
+            try:
+                import config
+                if hasattr(config, 'MSYS2_PATHS') and len(config.MSYS2_PATHS) > 0:
+                    msys2_base_path_before = config.MSYS2_PATHS[0]
+            except Exception:
+                msys2_base_path_before = None
 
         # 先检查已安装的版本
         PrintUtils.print_info("正在检查已安装的 MSYS2 版本...")
@@ -210,6 +238,11 @@ class Tool(BaseTool):
             if WingetUtils.uninstall(package_id, all_versions=True):
                 PrintUtils.print_success("MSYS2 所有版本卸载成功!")
                 PrintUtils.print_warning("注意: 可能需要手动删除安装目录（如 C:\\msys64）")
+                # 清理 PATH 与相关系统变量
+                if msys2_base_path_before:
+                    paths = self.get_msys2_paths(msys2_base_path_before, check_exists=False)
+                    EnvUtils.remove_from_path_environment(paths, prefer_system=True)
+                EnvUtils.delete_system_env_var("MSYS2_PATH_TYPE")
                 return True
             else:
                 PrintUtils.print_error("MSYS2 卸载失败")
@@ -229,6 +262,11 @@ class Tool(BaseTool):
             if WingetUtils.uninstall(package_id):
                 PrintUtils.print_success("MSYS2 卸载成功!")
                 PrintUtils.print_warning("注意: 可能需要手动删除安装目录（如 C:\\msys64）")
+                # 清理 PATH 与相关系统变量
+                if msys2_base_path_before:
+                    paths = self.get_msys2_paths(msys2_base_path_before, check_exists=False)
+                    EnvUtils.remove_from_path_environment(paths, prefer_system=True)
+                EnvUtils.delete_system_env_var("MSYS2_PATH_TYPE")
                 return True
             else:
                 PrintUtils.print_error("MSYS2 卸载失败")
@@ -442,33 +480,34 @@ Server = https://mirrors.ustc.edu.cn/msys2/mingw/x86_64
             PrintUtils.print_error(f"MSYS2 初始化失败: {e}")
             return False
 
-    def get_msys2_paths(self, msys2_base_path):
+    def get_msys2_paths(self, msys2_base_path, check_exists=True):
         """获取需要添加到PATH的MSYS2路径
         
         Args:
             msys2_base_path: MSYS2的安装路径（字符串）
+            check_exists: 是否检查路径存在（卸载时建议 False）
             
         Returns:
             list: 路径列表（字符串）
         """
         paths = []
         
-        if not msys2_base_path or not os.path.exists(msys2_base_path):
+        if not msys2_base_path:
             return paths
         
         # MSYS2的主要bin目录
         msys2_bin = os.path.join(msys2_base_path, 'usr', 'bin')
-        if os.path.exists(msys2_bin):
+        if (not check_exists) or os.path.exists(msys2_bin):
             paths.append(msys2_bin)
         
         # MinGW64的bin目录
         mingw64_bin = os.path.join(msys2_base_path, 'mingw64', 'bin')
-        if os.path.exists(mingw64_bin):
+        if (not check_exists) or os.path.exists(mingw64_bin):
             paths.append(mingw64_bin)
         
         # UCRT64的bin目录
         ucrt64_bin = os.path.join(msys2_base_path, 'ucrt64', 'bin')
-        if os.path.exists(ucrt64_bin):
+        if (not check_exists) or os.path.exists(ucrt64_bin):
             paths.append(ucrt64_bin)
         
         return paths
@@ -498,8 +537,16 @@ Server = https://mirrors.ustc.edu.cn/msys2/mingw/x86_64
             return False
 
         # 配置环境变量（使用通用方法）
-        success = EnvUtils.configure_path_environment(paths, skip_if_not_admin=True)
-        return success
+        success = EnvUtils.configure_path_environment(paths, skip_if_not_admin=False)
+        if not success:
+            PrintUtils.print_error("配置系统 PATH 失败，终止后续环境变量配置")
+            return False
+
+        # 额外设置 MSYS2 路径继承策略，避免 PATH 被覆盖（仅系统级）
+        if not EnvUtils.set_system_env_var("MSYS2_PATH_TYPE", "inherit"):
+            PrintUtils.print_error("设置系统环境变量 MSYS2_PATH_TYPE 失败")
+            return False
+        return True
 
     def run(self):
         """运行安装流程"""
