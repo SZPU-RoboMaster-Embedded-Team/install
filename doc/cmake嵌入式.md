@@ -11,7 +11,7 @@
 
 3. 在vscode中使用快捷键`ctrl + ~`打开底部命令窗选择使用`git bash`打开终端
 
-<img src="E:\Code\install\doc\asset\image.png" alt="image" style="zoom:25%;" />
+<img src="asset/image.png" alt="image" style="zoom:25%;" />
 
 4. 运行如下命令，即可编译并下载
 
